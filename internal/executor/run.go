@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -121,7 +123,9 @@ type logger interface {
 func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue, log logger) (claudecli.Run, error) {
 	var run claudecli.Run
 
-	prompt := q.Render(q.Prompt, job.Input, job.Args)
+	// Trimmed because a YAML block scalar ("prompt: |") carries a trailing
+	// newline that would otherwise ride along into the prompt.
+	prompt := strings.TrimSpace(q.Render(q.Prompt, job.Input, job.Args))
 	if err := e.st.SetRenderedPrompt(ctx, job.ID, prompt); err != nil {
 		return run, fmt.Errorf("record rendered prompt: %w", err)
 	}
@@ -221,15 +225,35 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 		})
 	}()
 
-	timedOut, waitErr := e.wait(cmd, q.Timeout.Duration(), runCtx)
-	streamErr := <-streamDone
-	if streamErr != nil {
+	// Stop the run on timeout or cancellation. exited closes once Wait has
+	// reaped the process, which tells the escalation it can stop.
+	exited := make(chan struct{})
+	var timedOut atomic.Bool
+	go func() {
+		timer := time.NewTimer(q.Timeout.Duration())
+		defer timer.Stop()
+		select {
+		case <-exited:
+			return
+		case <-runCtx.Done():
+		case <-timer.C:
+			timedOut.Store(true)
+		}
+		signalSequence(cmd, exited)
+	}()
+
+	// Drain stdout to EOF *before* calling Wait. Wait closes the pipe as soon
+	// as the process exits, so waiting first truncates the stream and can lose
+	// the result line the whole classification depends on.
+	if streamErr := <-streamDone; streamErr != nil {
 		log.Error("transcript stream failed", "error", streamErr)
 	}
+	waitErr := cmd.Wait()
+	close(exited)
 
 	run = claudecli.Run{
 		Collector: collector,
-		TimedOut:  timedOut,
+		TimedOut:  timedOut.Load(),
 		Missing:   missing,
 		ExitErr:   waitErr,
 		Stderr:    stderr.String(),
@@ -237,37 +261,10 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 	return run, nil
 }
 
-// wait waits for the process, enforcing the queue's wall-clock timeout with
-// the escalation from §3.4: SIGINT, a grace period, then SIGTERM.
-func (e *Executor) wait(cmd *exec.Cmd, timeout time.Duration, ctx context.Context) (timedOut bool, err error) {
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case err := <-done:
-		return false, err
-	case <-timer.C:
-		timedOut = true
-	case <-ctx.Done():
-		// Shutdown or an explicit cancel.
-	}
-
-	signalSequence(cmd, done)
-	select {
-	case err = <-done:
-	case <-time.After(time.Second):
-		err = errors.New("claude did not exit after SIGKILL")
-	}
-	return timedOut, err
-}
-
 // signalSequence escalates until the process is gone. SIGKILL is a backstop
 // beyond the design's sequence: a wedged process holds the single executor
 // slot, which would block every queue.
-func signalSequence(cmd *exec.Cmd, done <-chan error) {
+func signalSequence(cmd *exec.Cmd, exited <-chan struct{}) {
 	for _, step := range []struct {
 		sig   syscall.Signal
 		grace time.Duration
@@ -281,7 +278,7 @@ func signalSequence(cmd *exec.Cmd, done <-chan error) {
 			return
 		}
 		select {
-		case <-done:
+		case <-exited:
 			return
 		case <-time.After(step.grace):
 		}

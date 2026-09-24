@@ -1,0 +1,26 @@
+# Copy to config.yaml and fill in the tokens. Prefer token_env over a literal
+# token so this file can live in git alongside queues.yaml.
+
+listen: ":8080"
+data_dir: /data
+
+claude:
+  binary: claude
+  config_dir: /data/claude
+  # claudeai_login is the only mode that gives synced skills and claude.ai
+  # connectors. Switching to long_lived_token means vendoring skills and
+  # configuring MCP servers yourself (design §3.2).
+  credential_mode: claudeai_login
+  default_model: sonnet
+
+tokens:
+  # Full access, including the adhoc queue.
+  - name: admin
+    token_env: SPOOL_ADMIN_TOKEN
+    queues: ["*"]
+
+  # The share-sheet token. Scoped, because adhoc is effectively
+  # "run anything the allowlist permits".
+  - name: ios-share
+    token_env: SPOOL_IOS_TOKEN
+    queues: [media]

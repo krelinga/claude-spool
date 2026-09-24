@@ -81,7 +81,8 @@ esac
 const testQueues = `
 queues:
   media:
-    prompt: "/notion-media {{input}}"
+    prompt: |
+      /notion-media {{input}}
     requires: { skills: [notion-media], connectors: [notion] }
     allowed_tools: [Skill]
     timeout: 5s
@@ -195,7 +196,8 @@ func TestRunJobSuccess(t *testing.T) {
 	if j.FinishedAt == nil || j.StartedAt == nil {
 		t.Error("timestamps missing")
 	}
-	// The queue's template was applied, not the raw input.
+	// The queue's template was applied, not the raw input, and the block
+	// scalar's trailing newline was trimmed.
 	if j.RenderedPrompt != "/notion-media Dune" {
 		t.Errorf("RenderedPrompt = %q", j.RenderedPrompt)
 	}

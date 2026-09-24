@@ -1,0 +1,56 @@
+# Queue definitions. This file is the security policy: it holds the prompts and
+# the tool allowlists, so it belongs in git and is reviewed as a diff. The API
+# exposes it read-only (design §3.3).
+#
+# MVP ships the two queues named in §7: media and adhoc.
+
+queues:
+  media:
+    description: Add or update entries in the Notion Media database
+    prompt: |
+      /notion-media {{input}}
+    system_prompt: |
+      Prefer the edition/format details given. If the user says they own it, also record a Copy.
+    requires:
+      skills: [notion-media]
+      connectors: [notion]
+    allowed_tools:
+      - Skill
+      - WebSearch
+      - WebFetch
+      # SPIKE (§6 item 1): confirm the exact connector tool names from the
+      # system/init event and correct these before first real use.
+      - mcp__notion__notion-search
+      - mcp__notion__notion-fetch
+      - mcp__notion__notion-create-pages
+      - mcp__notion__notion-update-page
+    args:
+      url:
+        type: string
+        format: uri
+        description: A link the entry came from, when the share sheet has one.
+    outcome_extension:
+      notion_url:
+        type: string
+        description: The page created or updated.
+      media_type:
+        enum: [book, film, tv, game, album, podcast, comic, essay, ttrpg]
+    model: sonnet
+    max_turns: 30
+    timeout: 10m
+    weight: 1
+    notify: [job.failed, job.needs_input]
+    retention: 180d
+
+  adhoc:
+    description: Run a free-form prompt
+    prompt: "{{input}}"
+    # Deliberately narrow: adhoc is "run anything Claude's allowlist permits",
+    # so it gets no connector write access and should be reachable only by a
+    # trusted token.
+    allowed_tools: [Skill, WebSearch, WebFetch]
+    max_turns: 20
+    timeout: 10m
+    weight: 1
+    notify: [job.succeeded, job.failed, job.needs_input]
+    retention: 30d
