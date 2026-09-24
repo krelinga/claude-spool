@@ -4,9 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-This repo currently contains **no implementation** — only `docs/design/spool-design-doc.md` and a devcontainer. There is no `go.mod` yet, so the standard `go build ./...` / `go test ./...` / `golangci-lint run` commands have nothing to act on; document the real ones here once the module exists.
+The §7 **MVP is implemented**: queues from YAML, submit/list/get/cancel, scheduler, executor, classifier, SQLite, bearer tokens, Dockerfile. Not yet built — auth manager (§7 step 3), webhooks/SSE/metrics (step 4), retry/reply and running-job cancel (step 5).
 
-The design doc is the source of truth for behavior. Read it before implementing anything; §6 (validation spike) lists open questions about Claude Code CLI behavior that must be answered empirically before the code that depends on them is written.
+**The §6 validation spike has not been run.** Nothing here has touched a real `claude` binary; tests drive a fake CLI. `docs/design/spike.md` maps each open question to the one place in the tree that changes when it is answered. Do the spike before trusting any of it in anger.
+
+The design doc is the source of truth for behavior.
+
+## Commands
+
+```
+go build ./...                       # build
+go test ./... -race                  # full suite (~12s; executor tests exercise real timeouts)
+go test ./internal/executor -run TestTimeoutKillsRun -v
+go vet ./... && gofmt -l .           # lint
+go run ./cmd/spool --config deploy/spool/config.yaml --queues deploy/spool/queues.yaml --check
+```
+
+`--check` validates both config files and exits — the fastest way to confirm a `queues.yaml` edit. YAML parsing uses `KnownFields(true)`, so an unknown field is an error rather than a silent no-op.
+
+## Layout
+
+`cmd/spool` wires it together. Under `internal/`: `config` (both YAML files, the template renderer, the config hash), `store` (SQLite, job lifecycle), `sched` (weighted round-robin, pure), `claudecli` (**everything** touching the CLI's flags and output), `executor` (the single global runner), `api` (HTTP).
+
+Dependency direction is one-way: `config` and `store` are leaves, `claudecli` imports both, `executor` imports all, `api` imports everything but `executor`'s internals (it sees only a two-method interface).
 
 ## Toolchain
 
@@ -21,7 +41,9 @@ The devcontainer (`.devcontainer/devcontainer.json`) provides:
 
 Changing features means editing `devcontainer.json`; `devcontainer-lock.json` updates itself on rebuild and should not be hand-edited.
 
-**Go specifics the design implies:** a static binary, so **pure-Go SQLite** (e.g. `modernc.org/sqlite`) and `CGO_ENABLED=0` — don't reach for `mattn/go-sqlite3`. Subprocess control (timeout → SIGINT → 10s grace → SIGTERM) goes through `context` and `os/exec`; the `claude auth login` flow needs a PTY (`creack/pty`).
+**Go specifics:** `modernc.org/sqlite` with `CGO_ENABLED=0` for the static binary — don't reach for `mattn/go-sqlite3`. The store opens with `MaxOpenConns(1)`: single-user service, one job at a time, and it removes a class of SQLITE_BUSY races. The `claude auth login` flow will need a PTY (`creack/pty`) when the auth manager lands.
+
+**Subprocess gotcha, learned the hard way:** `cmd.Wait()` closes `StdoutPipe`, so it must not be called until the stdout scanner has drained to EOF. Calling it concurrently truncates the stream and silently loses the `result` line the whole classifier depends on. `executor.execute` drains first, then waits, with signal escalation in a separate watcher.
 
 ## What Spool is
 
