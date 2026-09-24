@@ -4,13 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-This repo currently contains **no implementation** — only `docs/design/spool-design-doc.md` and a devcontainer. There is no build, test, or lint command yet; add this section's commands as the toolchain lands.
+This repo currently contains **no implementation** — only `docs/design/spool-design-doc.md` and a devcontainer. There is no `go.mod` yet, so the standard `go build ./...` / `go test ./...` / `golangci-lint run` commands have nothing to act on; document the real ones here once the module exists.
 
 The design doc is the source of truth for behavior. Read it before implementing anything; §6 (validation spike) lists open questions about Claude Code CLI behavior that must be answered empirically before the code that depends on them is written.
 
 ## Toolchain
 
-The devcontainer (`.devcontainer/devcontainer.json`) provides Node LTS and Claude Code only. The design doc recommends **Go** (static binary, `context` for subprocess control, `creack/pty`, pure-Go SQLite) with TypeScript as an equally viable alternative — the choice has not been made and no Go toolchain is installed. Confirm the language with the user before scaffolding; adding a toolchain means editing the devcontainer feature list.
+**The language is Go.** The design doc listed TypeScript as an equally viable alternative (§3.8); that question is settled — don't reopen it.
+
+The devcontainer (`.devcontainer/devcontainer.json`) provides:
+
+- **Go** (`ghcr.io/devcontainers/features/go:1`, currently `latest`) with `gopls`, `dlv`, `staticcheck`, and `golangci-lint`. Pin to a specific minor once `go.mod` exists so the container and CI agree.
+- **docker-in-docker** for building and running the Spool image (§3.8) and for the §6 spike, which needs a bare Debian container with a pinned CLI version.
+- **Node LTS**, required by the Claude Code feature — not by Spool itself.
+- **`sqlite3` CLI** via `postCreateCommand`, for inspecting `spool.db` and the `.backup` procedure (§4). It is a debugging tool, not a build dependency.
+
+Changing features means editing `devcontainer.json`; `devcontainer-lock.json` updates itself on rebuild and should not be hand-edited.
+
+**Go specifics the design implies:** a static binary, so **pure-Go SQLite** (e.g. `modernc.org/sqlite`) and `CGO_ENABLED=0` — don't reach for `mattn/go-sqlite3`. Subprocess control (timeout → SIGINT → 10s grace → SIGTERM) goes through `context` and `os/exec`; the `claude auth login` flow needs a PTY (`creack/pty`).
 
 ## What Spool is
 
