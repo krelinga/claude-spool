@@ -91,11 +91,36 @@ case "$cmd" in
     ;;
   capture-login)
     need_up
-    mkdir -p "$out/04-login-pty"
+    # Created inside the container, not on the host: a host-made directory is
+    # owned by the host user and the container runs as its own uid, so `script`
+    # would fail to write — after you had already completed the login.
+    docker exec "$name" mkdir -p /out/04-login-pty
+    if ! docker exec "$name" sh -c 'touch /out/04-login-pty/.wtest && rm -f /out/04-login-pty/.wtest'; then
+      echo "Cannot write to /out/04-login-pty inside the container." >&2
+      exit 1
+    fi
+    if keepalive_running; then
+      # One writer at a time: a keep-alive request racing the login would be
+      # exactly the refresh-token race the design avoids (§3.2).
+      echo "Pausing the longevity test for the duration of the login."
+      docker exec "$name" pkill -f 70-keepalive.sh >/dev/null 2>&1
+      restart_keepalive=1
+    fi
     echo "Recording the login flow for probe 4 (is the URL on stdout? is the code read from stdin?)."
-    docker exec -it "$name" bash -c \
-      'script -q -c "claude auth login" /out/04-login-pty/transcript.txt'
-    echo "Saved to spike/out/04-login-pty/transcript.txt"
+    docker exec -it "$name" script -q -c "claude auth login" /out/04-login-pty/transcript.txt
+    echo
+    if [ -s "$out/04-login-pty/transcript.txt" ]; then
+      echo "Saved $(wc -c < "$out/04-login-pty/transcript.txt") bytes to spike/out/04-login-pty/transcript.txt"
+    else
+      echo "WARNING: the transcript is empty — nothing was captured." >&2
+    fi
+    if [ "${restart_keepalive:-0}" = "1" ]; then
+      docker exec "$name" mkdir -p /out/70-keepalive
+      docker exec -d "$name" sh -c \
+        "nohup bash /probes/70-keepalive.sh /out 14400 >> /out/70-keepalive/nohup.log 2>&1"
+      sleep 3
+      keepalive_running && echo "Longevity test resumed." || echo "WARNING: longevity test did not resume." >&2
+    fi
     ;;
   offline)
     need_up
