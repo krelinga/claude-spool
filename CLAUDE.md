@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 §7 steps 2 and 4 are implemented: queues from YAML, submit/list/get/cancel, scheduler, executor, classifier, SQLite, bearer tokens, Dockerfile, and reporting (webhook outbox with HMAC + retry, SSE, metrics). Not yet built — auth manager (step 3), retry/reply and running-job cancel (step 5), `queues.yaml` hot reload, retention pruning.
 
-**The §6 spike is partly done.** `spike/` is a working harness; its offline probes have been run against CLI **2.1.282** and already corrected three wrong assumptions — see the "Answered" table in `docs/design/spike.md`. Everything needing a claude.ai login is still open, so the connector tool names, the synced-skill behaviour, and the `structured_output` field name remain guesses.
+**The §6 spike is done** except the PTY login flow and the longevity run — see `docs/design/spike.md`, which is now results rather than questions. Everything here is pinned to CLI **2.1.282**; re-run `spike/run.sh` after an upgrade.
 
 The design doc is the source of truth for behavior.
 
@@ -28,7 +28,15 @@ go run ./cmd/spool --config deploy/spool/config.yaml --queues deploy/spool/queue
 
 Dependency direction is one-way: `config` and `store` are leaves; `claudecli` and `event` import both; `executor` imports those; `api` sees the executor only through a two-method interface.
 
-**Two CLI facts worth not relearning** (both verified, both absent from `claude --help`): `--json-schema` takes **inline JSON** and rejects a file path outright; `--max-turns` and `--append-system-prompt-file` both exist and work. `claude --help` is an incomplete flag list — test by invocation.
+**CLI facts worth not relearning**, all measured (see `docs/design/spike.md`):
+
+- `--allowedTools` **pre-approves; it does not restrict**. `--tools` is the real allowlist for built-ins, `--disallowedTools` denies and beats allow. A queue's `tools:` is the field that keeps Bash away from an unattended run — `allowed_tools:` alone does not.
+- `--json-schema` takes **inline JSON** and rejects a file path.
+- `structured_output` is the right key, and it **costs turns** (4 observed), so `max_turns` has a floor of 5.
+- Connectors are named `claude.ai Notion` with tools prefixed `mcp__claude_ai_Notion__`; synced skills are namespaced `anthropic-skills:notion-media`. Capability matching tolerates both prefixes.
+- A connector can report `pending` at init and contribute **no tools**. That is a startup race, not a misconfiguration: it retries rather than auto-pausing the queue.
+- On the result line, `subtype` is unreliable (reads `success` on an auth failure); use `is_error`, `terminal_reason` and `errors[]`.
+- `claude --help` is an incomplete flag list (`--max-turns`, `--append-system-prompt-file` are unlisted but work) — test by invocation.
 
 ## Toolchain
 

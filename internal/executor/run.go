@@ -70,6 +70,19 @@ func (e *Executor) runJob(ctx context.Context, job *store.Job) {
 		}
 	}
 
+	// A connector caught mid-connect is a race, not a config problem. Retry it
+	// a few times instead of pausing the queue or failing outright.
+	if res.ErrorKind == store.ErrKindCapabilityPending && res.ToolCalls == 0 &&
+		job.RunAttempts < maxCapabilityRetries {
+		if err := e.st.Requeue(ctx, job.ID); err == nil {
+			log.Info("requeued job whose connectors were still connecting",
+				"attempt", job.RunAttempts)
+			return
+		} else if !errors.Is(err, store.ErrNotFound) {
+			log.Error("requeue failed", "error", err)
+		}
+	}
+
 	// A missing skill or connector is a config or credential-mode problem, not
 	// a one-off. Pause the queue so it stops burning jobs (§3.4).
 	if res.ErrorKind == store.ErrKindCapabilityMissing {
@@ -258,7 +271,9 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 		ConfigDir:        e.cfg.Claude.ConfigDir,
 		SystemPromptFile: systemFile,
 		JSONSchema:       string(schema),
+		Tools:            q.Tools,
 		AllowedTools:     q.AllowedTools,
+		DisallowedTools:  q.DisallowedTools,
 		MaxTurns:         q.MaxTurns,
 		Model:            model,
 		ResumeSession:    job.ResumeSession,
@@ -284,7 +299,7 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 	log.Info("claude started", "pid", cmd.Process.Pid, "model", model, "timeout", q.Timeout.String())
 
 	collector := claudecli.NewCollector()
-	var missing []string
+	var caps claudecli.Capabilities
 	var capOnce sync.Once
 
 	streamDone := make(chan error, 1)
@@ -296,9 +311,10 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 			// tools (§3.2).
 			if ev.IsInit() {
 				capOnce.Do(func() {
-					if m := collector.MissingCapabilities(q.Requires); len(m) > 0 {
-						missing = m
-						log.Warn("required capabilities missing; stopping run", "missing", m)
+					caps = collector.CheckCapabilities(q.Requires)
+					if !caps.OK() {
+						log.Warn("declared capabilities unavailable; stopping run",
+							"missing", caps.Missing, "pending", caps.Pending)
 						stop(cmd)
 					}
 				})
@@ -336,7 +352,7 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 	run = claudecli.Run{
 		Collector: collector,
 		TimedOut:  timedOut.Load(),
-		Missing:   missing,
+		Caps:      caps,
 		ExitErr:   waitErr,
 		Stderr:    stderr.String(),
 	}

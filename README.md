@@ -19,9 +19,10 @@ SSE event stream, and Prometheus metrics.
 Not yet implemented: the auth manager and phone re-login flow (§7 step 3), and
 retry/reply plus running-job cancel (§7 step 5).
 
-**The validation spike has not been run.** Every assumption about the Claude
-Code CLI's flags and output format is still unverified; see
-`docs/design/spike.md`.
+The validation spike **has been run** against CLI 2.1.282 (`docs/design/spike.md`).
+It corrected several assumptions, including a security-relevant one: a queue's
+`allowed_tools` does not restrict anything on its own — `tools` does. Still
+unmeasured: the PTY login flow and the real re-auth cadence.
 
 ## Running it
 
@@ -82,6 +83,9 @@ API call. Tokens can be scoped to a subset of queues.
   accepting submissions while the executor is blocked.
 - **A clean exit is not success.** Claude also has to report a structured
   outcome saying the task itself worked.
+- **`tools` is the tool restriction, not `allowed_tools`.** The latter only
+  pre-approves; a built-in the CLI considers safe runs without being listed.
+  Every unattended queue should set `tools`.
 - **Notifications cannot be lost separately from results.** A job's terminal
   state and its webhook rows commit in one transaction, and the sender drains
   the outbox on its own, so a receiver that is down never holds up a job.

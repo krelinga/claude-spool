@@ -35,8 +35,18 @@ type Invocation struct {
 	SystemPromptFile string
 	// JSONSchema is passed inline. Verified against CLI 2.1.282: a file path is
 	// rejected with "--json-schema is not valid JSON".
-	JSONSchema    string
-	AllowedTools  []string
+	JSONSchema string
+
+	// Tools restricts the built-in tool set (--tools). AllowedTools only
+	// pre-approves and does not restrict, so this is the real limit. See
+	// config.Queue.Tools.
+	Tools []string
+	// AllowedTools pre-approves tools, including MCP connector tools, which
+	// --tools does not cover.
+	AllowedTools []string
+	// DisallowedTools denies outright and wins over AllowedTools.
+	DisallowedTools []string
+
 	MaxTurns      int
 	Model         string
 	ResumeSession string
@@ -66,8 +76,16 @@ func (inv Invocation) Args() []string {
 	if inv.SystemPromptFile != "" {
 		args = append(args, "--append-system-prompt-file", inv.SystemPromptFile)
 	}
+	// Order matters for reading the command back, not for the CLI: restrict
+	// first, then pre-approve, then deny. Deny wins over allow (verified).
+	if len(inv.Tools) > 0 {
+		args = append(args, "--tools", strings.Join(inv.Tools, ","))
+	}
 	if len(inv.AllowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(inv.AllowedTools, ","))
+	}
+	if len(inv.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(inv.DisallowedTools, ","))
 	}
 	if inv.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(inv.MaxTurns))

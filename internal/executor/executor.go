@@ -32,6 +32,9 @@ const (
 	idlePoll = 30 * time.Second
 	// stderrLimit caps how much CLI stderr is kept for classification.
 	stderrLimit = 8 << 10
+	// maxCapabilityRetries bounds retries for a connector that keeps reporting
+	// "pending", so a genuinely broken connector still reaches a human.
+	maxCapabilityRetries = 3
 )
 
 type Executor struct {

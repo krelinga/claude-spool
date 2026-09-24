@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -37,6 +38,15 @@ type Event struct {
 	NumTurns     int     `json:"num_turns"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
 	DurationMS   int64   `json:"duration_ms"`
+	// Errors carries the CLI's own failure text, e.g.
+	// ["Reached maximum number of turns (1)"]. Present on 2.1.282 and often
+	// the only place the reason is spelled out, since `result` can be absent
+	// on a failed run.
+	Errors []string `json:"errors"`
+	// TerminalReason is a machine-readable outcome: "completed", "max_turns",
+	// "api_error". More trustworthy than Subtype, which reads "success" even on
+	// an authentication failure.
+	TerminalReason string `json:"terminal_reason"`
 
 	// assistant/user
 	Message json.RawMessage `json:"message"`
@@ -47,16 +57,43 @@ type Event struct {
 type MCPServer struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// Source distinguishes a claude.ai connector ("claudeai") from a locally
+	// configured server. Observed on CLI 2.1.282.
+	Source string `json:"source,omitempty"`
 }
 
-// Connected reports whether an MCP server is usable. The CLI has used both
-// "connected" and "ok"; anything else (failed, pending, needs-auth) is not.
+// Connected reports whether an MCP server is usable.
+//
+// Verified statuses on CLI 2.1.282: "connected", "pending", "needs-auth",
+// "failed". Only a connected server contributes tools — a pending one reports
+// none at all — so anything else is unusable.
 func (m MCPServer) Connected() bool {
 	switch strings.ToLower(m.Status) {
 	case "connected", "ok", "ready":
 		return true
 	}
 	return false
+}
+
+// Pending reports whether a server was still connecting. This is a race rather
+// than a misconfiguration: the same server reads "connected" on the next run.
+func (m MCPServer) Pending() bool {
+	switch strings.ToLower(m.Status) {
+	case "pending", "connecting":
+		return true
+	}
+	return false
+}
+
+// nonToolNameChar matches everything the CLI replaces with "_" when it derives
+// a tool-name prefix from a server name.
+var nonToolNameChar = regexp.MustCompile(`[^A-Za-z0-9_]`)
+
+// ToolPrefix is the prefix this server's tools carry. The server named
+// "claude.ai Notion" contributes "mcp__claude_ai_Notion__notion-search" and so
+// on, so the prefix is the sanitised name between double underscores.
+func (m MCPServer) ToolPrefix() string {
+	return "mcp__" + nonToolNameChar.ReplaceAllString(m.Name, "_") + "__"
 }
 
 func (e *Event) IsResult() bool { return e.Type == "result" }

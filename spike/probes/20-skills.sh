@@ -1,7 +1,12 @@
 #!/bin/bash
 # Probe 2b: does a synced skill actually expand under -p?
 #
-# Pass the skill name to invoke, e.g.:  20-skills.sh /out notion-media
+# ANSWERED (2.1.282): claude.ai skills do sync into -p runs, and are namespaced
+# as "anthropic-skills:<name>". A slash command expands at prompt level and
+# consumes no tool call.
+#
+# Pass the skill name to invoke, e.g.:  20-skills.sh /out anthropic-skills:notion-media
+# Be careful which skill you name: invoking one with side effects will have them.
 # With no name it lists what is available and stops, which also answers
 # "does the notion-media skill exist on this account".
 set -uo pipefail

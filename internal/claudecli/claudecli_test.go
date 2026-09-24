@@ -193,41 +193,105 @@ func TestScanEventsWritesTranscriptAndSurvivesJunk(t *testing.T) {
 
 // --- capability checking ---
 
-func TestMissingCapabilities(t *testing.T) {
-	c := collect(t, initLine, resultLine(t, okOutcome("succeeded", "ok")))
+// realInitLine is the init event shape captured from CLI 2.1.282 in the spike:
+// connectors are named "claude.ai <Name>" and skills are namespaced.
+const realInitLine = `{"type":"system","subtype":"init","session_id":"s1",` +
+	`"slash_commands":["code-review","anthropic-skills:notion-media","anthropic-skills:notion-ideas"],` +
+	`"skills":["code-review","anthropic-skills:notion-media","anthropic-skills:notion-ideas"],` +
+	`"mcp_servers":[` +
+	`{"name":"claude.ai Notion","status":"connected","source":"claudeai"},` +
+	`{"name":"claude.ai Google Calendar","status":"needs-auth","source":"claudeai"},` +
+	`{"name":"claude.ai Todoist","status":"connected","source":"claudeai"}],` +
+	`"tools":["Skill","WebSearch","mcp__claude_ai_Notion__notion-search",` +
+	`"mcp__claude_ai_Notion__notion-create-pages","mcp__claude_ai_Todoist__find-tasks"]}`
 
-	if got := c.MissingCapabilities(config.Requires{
-		Skills: []string{"notion-media"}, Connectors: []string{"notion"},
-	}); got != nil {
-		t.Errorf("satisfied requirements reported missing: %v", got)
-	}
-	// A leading slash in config must not matter.
-	if got := c.MissingCapabilities(config.Requires{Skills: []string{"/notion-media"}}); got != nil {
-		t.Errorf("slash-prefixed skill not matched: %v", got)
-	}
-	got := c.MissingCapabilities(config.Requires{
-		Skills: []string{"notion-ideas"}, Connectors: []string{"todoist"},
-	})
-	if len(got) != 2 {
-		t.Fatalf("MissingCapabilities = %v, want 2", got)
+// A queue may declare the short name; the CLI's prefixes must not break it.
+func TestCapabilityMatchingToleratesCLIPrefixes(t *testing.T) {
+	c := collect(t, realInitLine)
+	for _, req := range []config.Requires{
+		{Skills: []string{"notion-media"}, Connectors: []string{"notion"}},
+		{Skills: []string{"anthropic-skills:notion-media"}, Connectors: []string{"claude.ai Notion"}},
+		{Skills: []string{"/notion-media"}, Connectors: []string{"Notion"}},
+	} {
+		if caps := c.CheckCapabilities(req); !caps.OK() {
+			t.Errorf("%+v reported unsatisfied: missing=%v pending=%v", req, caps.Missing, caps.Pending)
+		}
 	}
 }
 
-// A connector that is present but not connected is missing for our purposes.
-func TestDisconnectedConnectorCountsAsMissing(t *testing.T) {
+func TestCapabilityMatchingIsNotOverlyLoose(t *testing.T) {
+	c := collect(t, realInitLine)
+	caps := c.CheckCapabilities(config.Requires{
+		Skills: []string{"notion"}, Connectors: []string{"linear"},
+	})
+	// "notion" must not match "anthropic-skills:notion-media" on a prefix, and
+	// a connector that is not configured at all is missing.
+	if len(caps.Missing) != 2 {
+		t.Errorf("Missing = %v, want both the skill and the connector", caps.Missing)
+	}
+}
+
+// needs-auth is a real configuration problem: the connector exists but cannot
+// be used, and no amount of retrying will help.
+func TestNeedsAuthConnectorIsMissing(t *testing.T) {
+	c := collect(t, realInitLine)
+	caps := c.CheckCapabilities(config.Requires{Connectors: []string{"google calendar"}})
+	if len(caps.Missing) != 1 || len(caps.Pending) != 0 {
+		t.Errorf("caps = %+v, want it reported missing", caps)
+	}
+	if !strings.Contains(caps.Missing[0], "needs-auth") {
+		t.Errorf("the reason should be named: %q", caps.Missing[0])
+	}
+}
+
+// pending is a race, reported separately so the executor can retry instead of
+// pausing the queue. Captured in the spike: a pending server lists no tools.
+func TestPendingConnectorIsTransient(t *testing.T) {
 	c := collect(t, `{"type":"system","subtype":"init","session_id":"s1",`+
-		`"mcp_servers":[{"name":"notion","status":"failed"}]}`)
-	if got := c.MissingCapabilities(config.Requires{Connectors: []string{"notion"}}); len(got) != 1 {
-		t.Errorf("MissingCapabilities = %v, want the failed connector", got)
+		`"mcp_servers":[{"name":"claude.ai Notion","status":"pending","source":"claudeai"}],`+
+		`"tools":["Skill"]}`)
+	caps := c.CheckCapabilities(config.Requires{Connectors: []string{"notion"}})
+	if len(caps.Pending) != 1 || len(caps.Missing) != 0 {
+		t.Errorf("caps = %+v, want pending only", caps)
+	}
+	if caps.OK() {
+		t.Error("a pending connector is not OK to run against")
+	}
+}
+
+// A connector that says connected but contributes no tools is useless to the
+// job, so it counts as missing.
+func TestConnectedButNoToolsIsMissing(t *testing.T) {
+	c := collect(t, `{"type":"system","subtype":"init","session_id":"s1",`+
+		`"mcp_servers":[{"name":"claude.ai Notion","status":"connected"}],`+
+		`"tools":["Skill","WebSearch"]}`)
+	caps := c.CheckCapabilities(config.Requires{Connectors: []string{"notion"}})
+	if len(caps.Missing) != 1 || !strings.Contains(caps.Missing[0], "no tools") {
+		t.Errorf("caps = %+v", caps)
+	}
+}
+
+// The tool-name prefix is derived from the server name; this is how tool
+// presence is checked.
+func TestMCPToolPrefix(t *testing.T) {
+	cases := map[string]string{
+		"claude.ai Notion":               "mcp__claude_ai_Notion__",
+		"claude.ai Adobe for creativity": "mcp__claude_ai_Adobe_for_creativity__",
+		"plugin:engineering:slack":       "mcp__plugin_engineering_slack__",
+	}
+	for name, want := range cases {
+		if got := (MCPServer{Name: name}).ToolPrefix(); got != want {
+			t.Errorf("ToolPrefix(%q) = %q, want %q", name, got, want)
+		}
 	}
 }
 
 // With no init event there is nothing to check against; that is a different
 // failure and must not be reported as a capability problem.
-func TestMissingCapabilitiesWithoutInit(t *testing.T) {
+func TestCheckCapabilitiesWithoutInit(t *testing.T) {
 	c := NewCollector()
-	if got := c.MissingCapabilities(config.Requires{Skills: []string{"x"}}); got != nil {
-		t.Errorf("MissingCapabilities = %v, want nil", got)
+	if caps := c.CheckCapabilities(config.Requires{Skills: []string{"x"}}); !caps.OK() {
+		t.Errorf("caps = %+v, want OK", caps)
 	}
 }
 
@@ -292,7 +356,7 @@ func TestClassifyRunLevelFailures(t *testing.T) {
 				c := collect(t, initLine, resultLine(t, map[string]any{
 					"is_error": true, "result": "Login expired",
 				}))
-				return Run{Collector: c, Missing: []string{"connector notion"}}
+				return Run{Collector: c, Caps: Capabilities{Missing: []string{"connector notion"}}}
 			},
 			want: store.ErrKindCapabilityMissing,
 		},
@@ -581,5 +645,79 @@ func TestClassifyRealNotLoggedInResult(t *testing.T) {
 	}
 	if got.Result.Status != store.StatusFailed {
 		t.Errorf("Status = %v", got.Result.Status)
+	}
+}
+
+// Captured verbatim from CLI 2.1.282: hitting the turn limit reports it three
+// ways, and carries no `result` field at all.
+func TestClassifyRealMaxTurnsResult(t *testing.T) {
+	const line = `{"type":"result","subtype":"error_max_turns","session_id":"f6",` +
+		`"is_error":true,"num_turns":2,"stop_reason":"end_turn","terminal_reason":"max_turns",` +
+		`"errors":["Reached maximum number of turns (1)"],"permission_denials":[]}`
+	c := collect(t, line)
+	got := Classify(Run{Collector: c, ExitErr: errors.New("exit status 1")})
+	if got.Result.ErrorKind != store.ErrKindMaxTurns {
+		t.Errorf("ErrorKind = %q, want max_turns", got.Result.ErrorKind)
+	}
+	// The CLI's own wording is more useful than ours.
+	if !strings.Contains(got.Result.ErrorMessage, "maximum number of turns") {
+		t.Errorf("ErrorMessage = %q, should quote errors[]", got.Result.ErrorMessage)
+	}
+}
+
+// Captured verbatim: structured_output is the real field name, and the same
+// JSON also appears as text in `result`.
+func TestClassifyRealStructuredOutput(t *testing.T) {
+	const line = `{"type":"result","subtype":"success","session_id":"f6","is_error":false,` +
+		`"num_turns":4,"total_cost_usd":0.0671561,"duration_ms":8502,"terminal_reason":"completed",` +
+		`"permission_denials":[],` +
+		`"result":"{\"status\":\"succeeded\",\"summary\":\"Spike test completed successfully\"}",` +
+		`"structured_output":{"status":"succeeded","summary":"Spike test completed successfully"}}`
+	c := collect(t, line)
+	got := Classify(Run{Collector: c}).Result
+	if got.Status != store.StatusSucceeded {
+		t.Fatalf("Status = %v (%s)", got.Status, got.ErrorMessage)
+	}
+	if got.Summary != "Spike test completed successfully" {
+		t.Errorf("Summary = %q", got.Summary)
+	}
+	if got.NumTurns != 4 || got.CostUSD == 0 {
+		t.Errorf("stats = %+v", got)
+	}
+}
+
+// Captured verbatim: a denied tool reports {tool_name, tool_use_id, tool_input}.
+func TestClassifyRealPermissionDenial(t *testing.T) {
+	const line = `{"type":"result","subtype":"success","session_id":"f6","is_error":false,` +
+		`"num_turns":3,"terminal_reason":"completed",` +
+		`"permission_denials":[{"tool_name":"Write","tool_use_id":"toolu_014Z",` +
+		`"tool_input":{"file_path":"/tmp/x","content":"hello"}}],` +
+		`"structured_output":{"status":"failed","summary":"could not write the file"}}`
+	c := collect(t, line)
+	got := Classify(Run{Collector: c}).Result
+	if len(got.PermissionDenials) != 1 || got.PermissionDenials[0] != "Write" {
+		t.Errorf("PermissionDenials = %v, want [Write]", got.PermissionDenials)
+	}
+	// A denied tool does not by itself fail the run: Claude reported the task
+	// outcome, and that is what decides.
+	if got.Status != store.StatusFailed || got.ErrorKind != "" {
+		t.Errorf("got %v/%q, want failed with no run-level error kind", got.Status, got.ErrorKind)
+	}
+}
+
+func TestArgsIncludesToolRestrictions(t *testing.T) {
+	args := strings.Join(Invocation{
+		Prompt: "x", Tools: []string{"Skill", "WebSearch"},
+		AllowedTools:    []string{"Skill", "mcp__claude_ai_Notion__notion-search"},
+		DisallowedTools: []string{"Bash"}, MaxTurns: 30,
+	}.Args(), " ")
+	for _, want := range []string{
+		"--tools Skill,WebSearch",
+		"--allowedTools Skill,mcp__claude_ai_Notion__notion-search",
+		"--disallowedTools Bash",
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args missing %q: %s", want, args)
+		}
 	}
 }

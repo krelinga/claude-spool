@@ -128,49 +128,121 @@ func (c *Collector) Observe(e *Event) {
 	}
 }
 
-// MissingCapabilities reports which declared requirements are absent from the
-// system/init event. A queue whose skill or connector is gone must fail loudly
-// rather than let Claude improvise without its tools (§3.2).
-//
-// It returns nil when there is no init event to check against: that is a
-// different failure, classified elsewhere.
-func (c *Collector) MissingCapabilities(req config.Requires) []string {
-	if c.Init == nil {
-		return nil
-	}
-	var missing []string
+// Capabilities is the result of checking a queue's declared requirements
+// against what the CLI actually reported at init.
+type Capabilities struct {
+	// Missing are requirements that are genuinely absent: a skill that is not
+	// synced, a connector that is not configured or needs authorising. These
+	// are config problems and auto-pause the queue.
+	Missing []string
+	// Pending are connectors that had not finished connecting yet. Observed in
+	// the spike: a server reads "pending" at init and contributes no tools, and
+	// reads "connected" on the next run. Transient, so worth retrying rather
+	// than pausing the queue.
+	Pending []string
+}
 
-	have := map[string]bool{}
-	for _, cmd := range c.Init.SlashCommands {
-		have[strings.ToLower(strings.TrimPrefix(cmd, "/"))] = true
+func (c Capabilities) OK() bool { return len(c.Missing) == 0 && len(c.Pending) == 0 }
+
+// capabilityMatches compares a requirement against a name the CLI reported,
+// tolerating the prefixes the CLI adds.
+//
+// Verified on CLI 2.1.282: connectors arrive as "claude.ai Notion" and skills
+// as "anthropic-skills:notion-media", so a queue declaring "notion" or
+// "notion-media" must still match. Matching on the trailing segment keeps
+// queues.yaml readable without pinning it to the CLI's namespacing.
+func capabilityMatches(available, want string) bool {
+	a := strings.ToLower(strings.TrimSpace(available))
+	w := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(want, "/")))
+	if a == w {
+		return true
 	}
-	// Some CLI versions report synced skills separately from slash commands.
+	// Allow the requirement to be the tail of a prefixed name, after one of the
+	// separators the CLI uses. Suffix matching rather than last-segment
+	// matching, because connector names contain spaces: "google calendar" has
+	// to match "claude.ai Google Calendar".
+	for _, sep := range []string{":", " ", "/"} {
+		if strings.HasSuffix(a, sep+w) {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckCapabilities compares declared requirements against the init event.
+//
+// A queue whose skill or connector is absent must fail loudly rather than let
+// Claude improvise without its tools (§3.2). It returns a zero value when there
+// is no init event to check against: that is a different failure, classified
+// elsewhere.
+func (c *Collector) CheckCapabilities(req config.Requires) Capabilities {
+	var out Capabilities
+	if c.Init == nil {
+		return out
+	}
+
+	// Skills appear in slash_commands, and separately in a skills array.
+	var haveSkills []string
+	haveSkills = append(haveSkills, c.Init.SlashCommands...)
 	if raw, ok := c.Init.rawJSON("skills"); ok {
 		var skills []string
 		if err := json.Unmarshal(raw, &skills); err == nil {
-			for _, s := range skills {
-				have[strings.ToLower(strings.TrimPrefix(s, "/"))] = true
-			}
+			haveSkills = append(haveSkills, skills...)
 		}
 	}
 	for _, want := range req.Skills {
-		if !have[strings.ToLower(strings.TrimPrefix(want, "/"))] {
-			missing = append(missing, "skill "+want)
+		if !matchesAny(haveSkills, want) {
+			out.Missing = append(out.Missing, "skill "+want)
 		}
 	}
 
-	connected := map[string]bool{}
-	for _, srv := range c.Init.MCPServers {
-		if srv.Connected() {
-			connected[strings.ToLower(srv.Name)] = true
-		}
-	}
 	for _, want := range req.Connectors {
-		if !connected[strings.ToLower(want)] {
-			missing = append(missing, "connector "+want)
+		srv, found := c.findServer(want)
+		switch {
+		case !found:
+			out.Missing = append(out.Missing, "connector "+want+" (not configured)")
+		case srv.Pending():
+			out.Pending = append(out.Pending, "connector "+want+" (still connecting)")
+		case !srv.Connected():
+			out.Missing = append(out.Missing, "connector "+want+" ("+srv.Status+")")
+		case !c.hasToolsFrom(srv):
+			// Connected but contributing nothing is indistinguishable from
+			// absent as far as the job is concerned.
+			out.Missing = append(out.Missing, "connector "+want+" (no tools available)")
 		}
 	}
-	return missing
+	return out
+}
+
+func matchesAny(available []string, want string) bool {
+	for _, a := range available {
+		if capabilityMatches(a, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Collector) findServer(want string) (MCPServer, bool) {
+	for _, srv := range c.Init.MCPServers {
+		if capabilityMatches(srv.Name, want) {
+			return srv, true
+		}
+	}
+	return MCPServer{}, false
+}
+
+// hasToolsFrom reports whether the init event lists any tool contributed by a
+// server. This is the signal that matters: the tool list is what Claude can
+// actually call.
+func (c *Collector) hasToolsFrom(srv MCPServer) bool {
+	prefix := srv.ToolPrefix()
+	for _, t := range c.Init.Tools {
+		if strings.HasPrefix(t, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Run is everything the executor knows about a finished subprocess.
@@ -178,8 +250,8 @@ type Run struct {
 	Collector *Collector
 	// TimedOut is set when the executor killed the run on the queue's timeout.
 	TimedOut bool
-	// Missing is set when required capabilities were absent at init.
-	Missing []string
+	// Caps is the capability check performed against the init event.
+	Caps Capabilities
 	// ExitErr is the subprocess error, if any.
 	ExitErr error
 	// Stderr is the tail of the CLI's stderr, used only for classification and
@@ -222,9 +294,13 @@ func Classify(r Run) Classification {
 
 	// Ordered most-specific first: a capability problem explains everything
 	// downstream of it, and a timeout explains a missing result.
-	if len(r.Missing) > 0 {
+	if len(r.Caps.Missing) > 0 {
 		return fail(store.ErrKindCapabilityMissing,
-			"required capabilities unavailable: "+strings.Join(r.Missing, ", "))
+			"required capabilities unavailable: "+strings.Join(r.Caps.Missing, ", "))
+	}
+	if len(r.Caps.Pending) > 0 {
+		return fail(store.ErrKindCapabilityPending,
+			"connectors were still connecting: "+strings.Join(r.Caps.Pending, ", "))
 	}
 	if r.TimedOut {
 		return fail(store.ErrKindTimeout, "job exceeded its queue timeout")
@@ -239,8 +315,11 @@ func Classify(r Run) Classification {
 		out.ResetAt = parseUsageReset(text)
 		return out
 	}
-	if c.Result != nil && c.Result.Subtype == "error_max_turns" {
-		return fail(store.ErrKindMaxTurns, "hit the queue's max_turns limit")
+	// Verified on 2.1.282: subtype "error_max_turns", terminal_reason
+	// "max_turns", and errors ["Reached maximum number of turns (N)"].
+	if c.Result != nil && (c.Result.Subtype == "error_max_turns" || c.Result.TerminalReason == "max_turns") {
+		return fail(store.ErrKindMaxTurns,
+			nonEmpty(firstLine(strings.Join(c.Result.Errors, "; ")), "hit the queue's max_turns limit"))
 	}
 	if r.ExitErr != nil {
 		return fail(store.ErrKindCLI, cliErrorMessage(r))
@@ -249,7 +328,8 @@ func Classify(r Run) Classification {
 		return fail(store.ErrKindCLI, "claude exited without a result event")
 	}
 	if c.Result.IsError {
-		return fail(store.ErrKindCLI, firstLine(nonEmpty(c.Result.Result, r.Stderr, "claude reported an error")))
+		return fail(store.ErrKindCLI, firstLine(nonEmpty(
+			strings.Join(c.Result.Errors, "; "), c.Result.Result, r.Stderr, "claude reported an error")))
 	}
 
 	// Layer 2: the run was clean, so ask what Claude said about the task.
@@ -278,10 +358,16 @@ func Classify(r Run) Classification {
 // classificationText is everything worth pattern-matching against.
 func classificationText(r Run) string {
 	var sb strings.Builder
-	if r.Collector.Result != nil {
-		sb.WriteString(r.Collector.Result.Result)
+	if res := r.Collector.Result; res != nil {
+		sb.WriteString(res.Result)
 		sb.WriteString("\n")
-		if s, ok := r.Collector.Result.rawString("error", "message"); ok {
+		// errors[] is often the only place a failure is spelled out: a failed
+		// run may carry no `result` field at all.
+		for _, e := range res.Errors {
+			sb.WriteString(e)
+			sb.WriteString("\n")
+		}
+		if s, ok := res.rawString("error", "message"); ok {
 			sb.WriteString(s)
 			sb.WriteString("\n")
 		}
@@ -291,6 +377,11 @@ func classificationText(r Run) string {
 }
 
 func cliErrorMessage(r Run) string {
+	if res := r.Collector.Result; res != nil {
+		if s := firstLine(strings.Join(res.Errors, "; ")); s != "" {
+			return s
+		}
+	}
 	if s := firstLine(r.Stderr); s != "" {
 		return s
 	}

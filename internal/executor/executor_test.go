@@ -22,6 +22,7 @@ import (
 // by a marker in the prompt.
 const fakeClaude = `#!/bin/bash
 prompt=""
+ALL_ARGS="$*"
 while [ $# -gt 0 ]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
@@ -30,19 +31,24 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$SPOOL_TEST_DUMP" ]; then
+  echo "$ALL_ARGS" > "$SPOOL_TEST_DUMP/args.txt"
   env > "$SPOOL_TEST_DUMP/env.txt"
   pwd > "$SPOOL_TEST_DUMP/cwd.txt"
   ls -A . > "$SPOOL_TEST_DUMP/workdir.txt"
   printf '%s' "$prompt" > "$SPOOL_TEST_DUMP/prompt.txt"
 fi
 
-init='{"type":"system","subtype":"init","session_id":"sess-1","slash_commands":["notion-media"],"mcp_servers":[{"name":"notion","status":"connected"}]}'
+init='{"type":"system","subtype":"init","session_id":"sess-1","slash_commands":["anthropic-skills:notion-media"],"skills":["anthropic-skills:notion-media"],"mcp_servers":[{"name":"claude.ai Notion","status":"connected","source":"claudeai"}],"tools":["Skill","mcp__claude_ai_Notion__notion-search"]}'
 tool='{"type":"assistant","session_id":"sess-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Skill"}]}}'
 
 case "$prompt" in
   *HANG*)
     echo "$init"
     sleep 300
+    ;;
+  *PENDINGCONN*)
+    echo '{"type":"system","subtype":"init","session_id":"sess-1","slash_commands":["anthropic-skills:notion-media"],"skills":["anthropic-skills:notion-media"],"mcp_servers":[{"name":"claude.ai Notion","status":"pending","source":"claudeai"}],"tools":["Skill"]}'
+    sleep 30
     ;;
   *NOCONNECTOR*)
     echo '{"type":"system","subtype":"init","session_id":"sess-1","slash_commands":[],"mcp_servers":[]}'
@@ -87,6 +93,7 @@ queues:
     prompt: |
       /notion-media {{input}}
     requires: { skills: [notion-media], connectors: [notion] }
+    tools: [Skill]
     allowed_tools: [Skill]
     timeout: 5s
     weight: 1
@@ -709,5 +716,59 @@ func TestInterruptedJobEmitsEvent(t *testing.T) {
 	}
 	if _, ok := h.events(t)[event.JobInterrupted]; !ok {
 		t.Errorf("restart recovery should notify; saw %v", h.collected.all())
+	}
+}
+
+// A connector caught mid-connect is a race, not a config error: retry it,
+// don't pause the queue. Observed in the spike as status "pending" with no
+// tools contributed.
+func TestPendingConnectorRetriesWithoutPausing(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "media", "PENDINGCONN")
+	h.stepOnce(t)
+
+	j := h.get(t, "01A")
+	if j.Status != store.StatusQueued {
+		t.Errorf("status = %v (%s), want requeued", j.Status, j.ErrorMessage)
+	}
+	if j.RunAttempts != 1 {
+		t.Errorf("RunAttempts = %d", j.RunAttempts)
+	}
+	rt, _ := h.st.QueueRuntime(context.Background(), "media")
+	if rt.Paused {
+		t.Error("a transient connector race must not auto-pause the queue")
+	}
+	// And the executor is untouched: this is not a shared-state failure.
+	st, _ := h.st.ExecutorState(context.Background())
+	if st.State != store.ExecReady {
+		t.Errorf("executor state = %v", st.State)
+	}
+}
+
+// It must not retry forever: a connector stuck pending has to reach a human.
+func TestPendingConnectorEventuallyFails(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "media", "PENDINGCONN")
+	for range maxCapabilityRetries + 1 {
+		h.stepOnce(t)
+	}
+	j := h.get(t, "01A")
+	if j.Status != store.StatusFailed || j.ErrorKind != store.ErrKindCapabilityPending {
+		t.Errorf("got %v/%v after %d attempts, want a terminal failure",
+			j.Status, j.ErrorKind, j.RunAttempts)
+	}
+}
+
+// The queue's tools restriction must actually reach the command line: it is the
+// only thing that removes a built-in, since allowed_tools merely pre-approves.
+func TestToolRestrictionReachesTheCLI(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "media", "Dune")
+	h.stepOnce(t)
+
+	// The fake CLI records its own argv.
+	args := h.dumpFile(t, "args.txt")
+	if !strings.Contains(args, "--tools Skill") {
+		t.Errorf("--tools not passed: %s", args)
 	}
 }

@@ -1,29 +1,40 @@
 # Queue definitions. This file is the security policy: it holds the prompts and
-# the tool allowlists, so it belongs in git and is reviewed as a diff. The API
+# the tool restrictions, so it belongs in git and is reviewed as a diff. The API
 # exposes it read-only (design §3.3).
 #
-# MVP ships the two queues named in §7: media and adhoc.
+# Names here are the real ones captured by the spike against CLI 2.1.282, not
+# the design doc's placeholders:
+#   - the Notion connector is "claude.ai Notion", contributing tools prefixed
+#     mcp__claude_ai_Notion__
+#   - claude.ai-synced skills are namespaced, e.g. anthropic-skills:notion-media
+#
+# On tool restriction, which is easy to get wrong:
+#   tools:             the built-in tools the run may use AT ALL (--tools).
+#   allowed_tools:     pre-approval so a needed tool is not denied for want of
+#                      a human (--allowedTools). It does NOT restrict.
+#   disallowed_tools:  denied outright, and wins over allowed_tools.
+# Omitting `tools` leaves every built-in available — including Bash for
+# commands the CLI deems safe. Always set it for an unattended queue.
 
 queues:
   media:
     description: Add or update entries in the Notion Media database
     prompt: |
-      /notion-media {{input}}
+      /anthropic-skills:notion-media {{input}}
     system_prompt: |
       Prefer the edition/format details given. If the user says they own it, also record a Copy.
     requires:
       skills: [notion-media]
       connectors: [notion]
+    tools: [Skill, WebSearch, WebFetch]
     allowed_tools:
       - Skill
       - WebSearch
       - WebFetch
-      # SPIKE (§6 item 1): confirm the exact connector tool names from the
-      # system/init event and correct these before first real use.
-      - mcp__notion__notion-search
-      - mcp__notion__notion-fetch
-      - mcp__notion__notion-create-pages
-      - mcp__notion__notion-update-page
+      - mcp__claude_ai_Notion__notion-search
+      - mcp__claude_ai_Notion__notion-fetch
+      - mcp__claude_ai_Notion__notion-create-pages
+      - mcp__claude_ai_Notion__notion-update-page
     args:
       url:
         type: string
@@ -45,10 +56,14 @@ queues:
   adhoc:
     description: Run a free-form prompt
     prompt: "{{input}}"
-    # Deliberately narrow: adhoc is "run anything Claude's allowlist permits",
-    # so it gets no connector write access and should be reachable only by a
-    # trusted token.
+    # Deliberately narrow: adhoc is "run whatever the prompt asks", so it gets
+    # no shell, no filesystem writes, and no connector access. Reachable only by
+    # a trusted token.
+    tools: [Skill, WebSearch, WebFetch]
     allowed_tools: [Skill, WebSearch, WebFetch]
+    # Defence in depth: --tools already removes these, and a future edit that
+    # widens `tools` should not silently hand adhoc a shell.
+    disallowed_tools: [Bash, Write, Edit, NotebookEdit]
     max_turns: 20
     timeout: 10m
     weight: 1

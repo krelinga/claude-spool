@@ -2,8 +2,12 @@
 # Probe 3: does structured output appear on the stream-json result line, and
 # does --json-schema take a file path or inline JSON?
 #
-# This is the single most load-bearing unknown: internal/claudecli.ExtractOutcome
-# guesses four field names and then falls back to parsing a fenced JSON block.
+# ANSWERED (2.1.282): the key is "structured_output", and --json-schema needs
+# inline JSON. Kept for re-checking after a CLI upgrade.
+#
+# Note the turn budget: structured output costs turns of its own (4 observed),
+# so a low --max-turns produces error_max_turns and no outcome. An earlier
+# version of this probe used --max-turns 1 and proved nothing.
 set -uo pipefail
 out=${1:-/out}/30-structured-output
 mkdir -p "$out"
@@ -24,19 +28,19 @@ SCHEMA
 prompt="Report that you succeeded at the task 'spike test', with a one line summary."
 
 # Variant A: a file path, which is what Spool currently passes.
-claude -p "$prompt" --output-format stream-json --verbose --model haiku --max-turns 1 \
+claude -p "$prompt" --output-format stream-json --verbose --model haiku --max-turns 8 \
   --json-schema "$out/schema.json" \
   > "$out/a-file-path.jsonl" 2> "$out/a-file-path.stderr"
 echo "exit=$?" > "$out/a-file-path.exit"
 
 # Variant B: inline JSON.
-claude -p "$prompt" --output-format stream-json --verbose --model haiku --max-turns 1 \
+claude -p "$prompt" --output-format stream-json --verbose --model haiku --max-turns 8 \
   --json-schema "$(cat "$out/schema.json")" \
   > "$out/b-inline.jsonl" 2> "$out/b-inline.stderr"
 echo "exit=$?" > "$out/b-inline.exit"
 
 # Variant C: no schema at all, as a control.
-claude -p "$prompt" --output-format stream-json --verbose --model haiku --max-turns 1 \
+claude -p "$prompt" --output-format stream-json --verbose --model haiku --max-turns 8 \
   > "$out/c-no-schema.jsonl" 2> "$out/c-no-schema.stderr"
 echo "exit=$?" > "$out/c-no-schema.exit"
 

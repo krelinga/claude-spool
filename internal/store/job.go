@@ -43,6 +43,11 @@ const (
 	ErrKindAuth              ErrorKind = "auth"
 	ErrKindUsageLimit        ErrorKind = "usage_limit"
 	ErrKindCapabilityMissing ErrorKind = "capability_missing"
+	// ErrKindCapabilityPending is a connector that had not finished connecting
+	// when the run started. Observed in the spike: an MCP server reports
+	// "pending" at init and contributes no tools, then reads "connected" on the
+	// next run. Transient, so it must not auto-pause the queue.
+	ErrKindCapabilityPending ErrorKind = "capability_pending"
 	ErrKindMaxTurns          ErrorKind = "max_turns"
 	ErrKindTimeout           ErrorKind = "timeout"
 	ErrKindCLI               ErrorKind = "cli_error"

@@ -19,6 +19,10 @@ const (
 	DefaultTimeout   = Duration(10 * 60 * 1e9)     // 10m
 	DefaultRetention = Duration(180 * 24 * 3600e9) // 180d
 	DefaultWeight    = 1.0
+
+	// MinMaxTurns is the floor below which a queue cannot reliably produce a
+	// structured outcome.
+	MinMaxTurns = 5
 )
 
 // ArgSpec describes one structured argument a queue accepts alongside the free
@@ -55,12 +59,28 @@ type Requires struct {
 // Queue is a named, config-defined job type. Clients send input; the queue
 // supplies the prompt, the policy, and the tracking (§3.3).
 type Queue struct {
-	Name             string                  `yaml:"-" json:"name"`
-	Description      string                  `yaml:"description" json:"description,omitempty"`
-	Prompt           string                  `yaml:"prompt" json:"prompt"`
-	SystemPrompt     string                  `yaml:"system_prompt" json:"system_prompt,omitempty"`
-	Requires         Requires                `yaml:"requires" json:"requires,omitempty"`
-	AllowedTools     []string                `yaml:"allowed_tools" json:"allowed_tools,omitempty"`
+	Name         string   `yaml:"-" json:"name"`
+	Description  string   `yaml:"description" json:"description,omitempty"`
+	Prompt       string   `yaml:"prompt" json:"prompt"`
+	SystemPrompt string   `yaml:"system_prompt" json:"system_prompt,omitempty"`
+	Requires     Requires `yaml:"requires" json:"requires,omitempty"`
+
+	// Tools is the built-in tool set the run may use at all, passed to
+	// --tools. This is the real restriction.
+	//
+	// Verified against CLI 2.1.282: --allowedTools only *pre-approves* tools,
+	// it does not restrict them — a built-in the CLI considers safe (a
+	// read-only `echo` through Bash, say) still runs when it is absent from
+	// allowed_tools. --tools removes the tool outright. Leaving this empty
+	// means every built-in is available, which for an unattended queue is
+	// almost never what you want.
+	Tools []string `yaml:"tools" json:"tools,omitempty"`
+	// AllowedTools pre-approves tools so they are not denied for want of a
+	// human, including MCP connector tools, which --tools does not cover.
+	AllowedTools []string `yaml:"allowed_tools" json:"allowed_tools,omitempty"`
+	// DisallowedTools denies specific tools outright and wins over
+	// AllowedTools. Use it for MCP tools, which --tools cannot restrict.
+	DisallowedTools  []string                `yaml:"disallowed_tools" json:"disallowed_tools,omitempty"`
 	OutcomeExtension map[string]OutcomeField `yaml:"outcome_extension" json:"outcome_extension,omitempty"`
 	Args             map[string]ArgSpec      `yaml:"args" json:"args,omitempty"`
 	Model            string                  `yaml:"model" json:"model,omitempty"`
@@ -158,8 +178,12 @@ func (q *Queue) validate() error {
 	if strings.TrimSpace(q.Prompt) == "" {
 		return fmt.Errorf("prompt is required")
 	}
-	if q.MaxTurns < 1 {
-		return fmt.Errorf("max_turns must be >= 1")
+	// Structured output costs turns of its own: a run observed in the spike
+	// needed four before emitting it, and hitting the limit first produces
+	// error_max_turns with no outcome at all. A queue with a tiny max_turns
+	// would fail every job in a way that looks like a model problem.
+	if q.MaxTurns < MinMaxTurns {
+		return fmt.Errorf("max_turns must be >= %d (structured output needs several turns)", MinMaxTurns)
 	}
 	if q.Timeout <= 0 {
 		return fmt.Errorf("timeout must be > 0")
