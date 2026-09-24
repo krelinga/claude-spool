@@ -112,7 +112,7 @@ func contains(ss []string, want string) bool {
 func TestArgs(t *testing.T) {
 	inv := Invocation{
 		Prompt: "do a thing", AllowedTools: []string{"Skill", "WebSearch"},
-		MaxTurns: 30, Model: "sonnet", JSONSchemaFile: "/run/schema.json",
+		MaxTurns: 30, Model: "sonnet", JSONSchema: `{"type":"object"}`,
 		SystemPromptFile: "/run/system.md",
 	}
 	args := inv.Args()
@@ -121,7 +121,7 @@ func TestArgs(t *testing.T) {
 		"-p do a thing", "--output-format stream-json", "--verbose",
 		"--permission-mode dontAsk", "--permission-prompts none",
 		"--allowedTools Skill,WebSearch", "--max-turns 30", "--model sonnet",
-		"--json-schema /run/schema.json", "--append-system-prompt-file /run/system.md",
+		`--json-schema {"type":"object"}`, "--append-system-prompt-file /run/system.md",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args missing %q: %v", want, args)
@@ -528,5 +528,58 @@ func TestBuildSystemPrompt(t *testing.T) {
 	q2, _ := qs2.Get("a")
 	if BuildSystemPrompt(q2) != UnattendedPreamble {
 		t.Error("a queue without its own system prompt should get just the preamble")
+	}
+}
+
+// The CLI reports denials itself; prefer that over inferring from text.
+func TestDenialsFromResultLine(t *testing.T) {
+	c := collect(t, initLine, resultLine(t, map[string]any{
+		"permission_denials": []any{"Bash", "Write"},
+		"structured_output":  map[string]any{"status": "succeeded", "summary": "ok"},
+	}))
+	got := Classify(Run{Collector: c}).Result.PermissionDenials
+	if len(got) != 2 || got[0] != "Bash" {
+		t.Errorf("PermissionDenials = %v, want [Bash Write]", got)
+	}
+}
+
+// The shape when non-empty is unconfirmed, so objects must work too.
+func TestDenialsFromResultLineObjects(t *testing.T) {
+	c := collect(t, initLine, resultLine(t, map[string]any{
+		"permission_denials": []any{map[string]any{"tool_name": "Bash"}},
+		"structured_output":  map[string]any{"status": "succeeded", "summary": "ok"},
+	}))
+	got := Classify(Run{Collector: c}).Result.PermissionDenials
+	if len(got) != 1 || got[0] != "Bash" {
+		t.Errorf("PermissionDenials = %v, want [Bash]", got)
+	}
+}
+
+// An empty list (what CLI 2.1.282 sends on a clean run) must not invent one.
+func TestEmptyDenialsList(t *testing.T) {
+	c := collect(t, initLine, resultLine(t, map[string]any{
+		"permission_denials": []any{},
+		"structured_output":  map[string]any{"status": "succeeded", "summary": "ok"},
+	}))
+	if got := Classify(Run{Collector: c}).Result.PermissionDenials; len(got) != 0 {
+		t.Errorf("PermissionDenials = %v, want none", got)
+	}
+}
+
+// Captured verbatim from CLI 2.1.282 with no credentials (spike probe). The
+// classifier must call this auth, not cli_error: the run produced a normal
+// result line with subtype "success" despite is_error being true.
+func TestClassifyRealNotLoggedInResult(t *testing.T) {
+	const line = `{"is_error":true,"num_turns":1,"subtype":"success",` +
+		`"result":"Not logged in · Please run /login","type":"result",` +
+		`"terminal_reason":"api_error","total_cost_usd":0,"duration_ms":39,` +
+		`"session_id":"89380dcc","permission_denials":[]}`
+	c := collect(t, line)
+	got := Classify(Run{Collector: c, ExitErr: errors.New("exit status 1")})
+	if got.Result.ErrorKind != store.ErrKindAuth {
+		t.Errorf("ErrorKind = %q, want auth (message %q)", got.Result.ErrorKind, got.Result.ErrorMessage)
+	}
+	if got.Result.Status != store.StatusFailed {
+		t.Errorf("Status = %v", got.Result.Status)
 	}
 }

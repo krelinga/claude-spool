@@ -1,0 +1,143 @@
+#!/bin/bash
+# Host-side driver for the validation spike (design §6).
+#
+# Everything the spike learns lands in spike/out/ as raw CLI output. Nothing
+# here is summarised or interpreted on the way out: the point is to see what
+# the CLI actually does.
+set -uo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+image=spool-spike
+name=${SPIKE_CONTAINER:-spool-spike}
+version=${CLAUDE_CODE_VERSION:-latest}
+out="$here/out"
+
+usage() {
+  cat <<'USAGE'
+Usage: spike/run.sh <command>
+
+  build            Build the spike image (pins CLAUDE_CODE_VERSION, default latest)
+  up               Start the container with a persistent /data/claude volume
+  login            Interactive claude.ai login inside the container  <-- you must do this
+  capture-login    Same, but records the PTY output for probe 4
+  offline          Probes needing no login: flags (probe 0)
+  probe            All login-requiring probes: 1, 2, 3, 5, 6a, 6b
+  skill <name>     Probe 2b against a specific skill, e.g. notion-media
+  keepalive        Start the longevity test in the background (probe 7)
+  keepalive-log    Tail the longevity log
+  results          List what has been captured
+  shell            Shell inside the container
+  down             Stop and remove the container (the login volume survives)
+  clean            Remove the container AND the login volume
+
+Order: build, up, offline, login, probe, then leave keepalive running.
+USAGE
+}
+
+running() { [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = "true" ]; }
+
+need_up() {
+  if ! running; then
+    echo "Container '$name' is not running. Run: spike/run.sh up" >&2
+    exit 1
+  fi
+}
+
+# Warn rather than fail: a probe run with a credential override in the
+# environment would silently prove the wrong thing.
+check_env() {
+  for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
+    if [ -n "${!v:-}" ]; then
+      echo "WARNING: $v is set in your shell. It is NOT passed into the container," >&2
+      echo "         but do not let it leak in, or skills and connectors will be off." >&2
+    fi
+  done
+}
+
+cmd=${1:-}
+case "$cmd" in
+  build)
+    docker build --build-arg "CLAUDE_CODE_VERSION=$version" -t "$image" "$here"
+    ;;
+  up)
+    check_env
+    mkdir -p "$out"
+    # The container runs as its own uid, so the bind-mounted output directory
+    # has to be writable by it. This is a gitignored scratch directory.
+    chmod 0777 "$out"
+    docker rm -f "$name" >/dev/null 2>&1
+    # The login lives in a named volume so it survives container restarts, and
+    # is created inside the container: never copied in from elsewhere, which
+    # would make a second holder of the same refresh token (§3.2).
+    docker run -d --name "$name" \
+      -v spool-spike-claude:/data/claude \
+      -v "$out:/out" \
+      -v "$here/probes:/probes:ro" \
+      "$image"
+    echo "Started. CLI version: $(docker exec "$name" claude --version 2>&1)"
+    echo "Next: spike/run.sh offline   (then: login)"
+    ;;
+  login)
+    need_up
+    echo "A URL will be printed. Open it, approve, and paste the code back here."
+    docker exec -it "$name" claude auth login
+    ;;
+  capture-login)
+    need_up
+    mkdir -p "$out/04-login-pty"
+    echo "Recording the login flow for probe 4 (is the URL on stdout? is the code read from stdin?)."
+    docker exec -it "$name" bash -c \
+      'script -q -c "claude auth login" /out/04-login-pty/transcript.txt'
+    echo "Saved to spike/out/04-login-pty/transcript.txt"
+    ;;
+  offline)
+    need_up
+    docker exec "$name" bash /probes/00-flags.sh /out
+    ;;
+  probe)
+    need_up
+    if ! docker exec "$name" claude auth status >/dev/null 2>&1; then
+      echo "Not logged in inside the container. Run: spike/run.sh login" >&2
+      exit 1
+    fi
+    for p in 10-init 20-skills 30-structured-output 40-auth-status 50-auth-failure 60-permission-denial; do
+      echo
+      echo "################ $p ################"
+      docker exec "$name" bash "/probes/$p.sh" /out || echo "(probe $p exited non-zero; output kept)"
+    done
+    echo
+    echo "Captured under spike/out/. Hand that directory over for interpretation."
+    ;;
+  skill)
+    need_up
+    docker exec "$name" bash /probes/20-skills.sh /out "${2:-}"
+    ;;
+  keepalive)
+    need_up
+    docker exec -d "$name" bash -c \
+      "nohup bash /probes/70-keepalive.sh /out ${2:-14400} >> /out/70-keepalive/nohup.log 2>&1"
+    echo "Longevity test started. Check with: spike/run.sh keepalive-log"
+    echo "Leave it running for weeks; it also captures real failure shapes."
+    ;;
+  keepalive-log)
+    tail -f "$out/70-keepalive/log.jsonl"
+    ;;
+  results)
+    if [ ! -d "$out" ]; then echo "Nothing captured yet."; exit 0; fi
+    find "$out" -name SUMMARY.txt | sort | while read -r f; do
+      echo "=== ${f#"$out"/} ==="
+    done
+    echo
+    echo "Full tree:"
+    find "$out" -type f | sort | sed "s|$out|spike/out|"
+    ;;
+  shell)   need_up; docker exec -it "$name" bash ;;
+  down)    docker rm -f "$name" >/dev/null 2>&1 && echo "Removed $name (login volume kept)." ;;
+  clean)
+    docker rm -f "$name" >/dev/null 2>&1
+    docker volume rm spool-spike-claude >/dev/null 2>&1
+    echo "Removed container and login volume."
+    ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "Unknown command: $cmd" >&2; usage; exit 1 ;;
+esac

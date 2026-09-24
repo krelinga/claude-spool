@@ -150,10 +150,6 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 	if err != nil {
 		return run, err
 	}
-	schemaFile := filepath.Join(runDir, "outcome-schema.json")
-	if err := os.WriteFile(schemaFile, schema, 0o600); err != nil {
-		return run, fmt.Errorf("write outcome schema: %w", err)
-	}
 
 	transcript, err := os.Create(filepath.Join(e.cfg.TranscriptDir(), job.ID+".jsonl"))
 	if err != nil {
@@ -175,7 +171,7 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 		WorkDir:          workDir,
 		ConfigDir:        e.cfg.Claude.ConfigDir,
 		SystemPromptFile: systemFile,
-		JSONSchemaFile:   schemaFile,
+		JSONSchema:       string(schema),
 		AllowedTools:     q.AllowedTools,
 		MaxTurns:         q.MaxTurns,
 		Model:            model,

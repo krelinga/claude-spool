@@ -80,6 +80,18 @@ func (c *Collector) Observe(e *Event) {
 	case e.IsResult():
 		c.Result = e
 	}
+	// The result line carries the CLI's own denial list, which beats inferring
+	// from tool_result text. Verified present (as []) on CLI 2.1.282; the shape
+	// when non-empty is still unconfirmed, so several spellings are tried and
+	// the text-based inference below remains as a fallback.
+	if e.IsResult() {
+		for _, name := range parseDenials(e) {
+			if !c.seenDenial[name] {
+				c.seenDenial[name] = true
+				c.Denials = append(c.Denials, name)
+			}
+		}
+	}
 	// An api_retry carrying a rate-limit note is the early warning that the
 	// subscription budget, not this job, is the problem (§3.4).
 	if strings.Contains(e.Type, "retry") {
@@ -370,3 +382,33 @@ const (
 	errBadOutcome       = outcomeError("claude's structured outcome was not valid JSON")
 	errBadOutcomeStatus = outcomeError("claude's structured outcome had no valid status")
 )
+
+// parseDenials reads the result line's permission_denials field, accepting
+// either a list of tool names or a list of objects naming the tool.
+func parseDenials(e *Event) []string {
+	raw, ok := e.rawJSON("permission_denials", "permissionDenials")
+	if !ok {
+		return nil
+	}
+	var names []string
+	if err := json.Unmarshal(raw, &names); err == nil {
+		return names
+	}
+	// A failed array decode leaves zero-value elements behind, so start clean
+	// rather than appending to the partial result.
+	names = nil
+	var objs []struct {
+		ToolName string `json:"tool_name"`
+		Tool     string `json:"tool"`
+		Name     string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &objs); err != nil {
+		return nil
+	}
+	for _, o := range objs {
+		if n := nonEmpty(o.ToolName, o.Tool, o.Name); n != "" {
+			names = append(names, n)
+		}
+	}
+	return names
+}

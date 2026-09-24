@@ -33,11 +33,13 @@ type Invocation struct {
 	ConfigDir string
 
 	SystemPromptFile string
-	JSONSchemaFile   string
-	AllowedTools     []string
-	MaxTurns         int
-	Model            string
-	ResumeSession    string
+	// JSONSchema is passed inline. Verified against CLI 2.1.282: a file path is
+	// rejected with "--json-schema is not valid JSON".
+	JSONSchema    string
+	AllowedTools  []string
+	MaxTurns      int
+	Model         string
+	ResumeSession string
 
 	SyncSkills bool
 	// ExtraEnv is appended last; it cannot reintroduce a banned variable.
@@ -46,9 +48,10 @@ type Invocation struct {
 
 // Args builds the command line.
 //
-// SPIKE (§6): the exact spelling of these flags is unverified against a pinned
-// CLI. --json-schema is passed a file path here; if the flag wants inline JSON
-// instead, this function is the only thing that changes.
+// Verified against CLI 2.1.282 (spike/out/00-flags). Note that `claude --help`
+// does not list --max-turns or --append-system-prompt-file, but both are
+// accepted; the help output is an incomplete list, so test by invocation
+// rather than by grepping help.
 func (inv Invocation) Args() []string {
 	args := []string{
 		"-p", inv.Prompt,
@@ -57,8 +60,8 @@ func (inv Invocation) Args() []string {
 		"--permission-mode", "dontAsk",
 		"--permission-prompts", "none",
 	}
-	if inv.JSONSchemaFile != "" {
-		args = append(args, "--json-schema", inv.JSONSchemaFile)
+	if inv.JSONSchema != "" {
+		args = append(args, "--json-schema", inv.JSONSchema)
 	}
 	if inv.SystemPromptFile != "" {
 		args = append(args, "--append-system-prompt-file", inv.SystemPromptFile)
