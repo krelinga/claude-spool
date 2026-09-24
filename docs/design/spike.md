@@ -74,10 +74,16 @@ Two fields the design did not know about, now used by the classifier:
 - **§6 item 4 — `claude auth login` under a PTY.** Not captured; the login was
   done interactively. `spike/run.sh capture-login` records it when needed. This
   is the remaining unknown for the auth manager (§7 step 3).
-- **§6 item 7 — re-auth cadence.** `spike/run.sh keepalive` was not left
-  running. It also captures real expiry and usage-limit failures, which are the
-  two error shapes still unmeasured: `usagePatterns` and `usageResetRe` in
-  `internal/claudecli/classify.go` remain guesses.
+- **§6 item 7 — re-auth cadence.** The longevity test is **now running** in the
+  `spool-spike` container at the 4h interval, logging to
+  `spike/out/70-keepalive/log.jsonl` (one JSON line per check: `logged_in`,
+  exit codes, latency, `terminal_reason`). It also saves the full stream of any
+  failed check under `failures/`, which is the only way to capture a real
+  expiry or usage-limit shape — `usagePatterns` and `usageResetRe` in
+  `internal/claudecli/classify.go` are still guesses until one occurs.
+
+  It does not survive a container restart; `spike/run.sh keepalive-status`
+  reports whether it is alive.
 - **Whether `/anthropic-skills:notion-media` does the right thing.** Expansion
   is proven with a harmless skill; the media skill itself was not invoked,
   deliberately, to avoid writing to a live Notion database. Worth one manual

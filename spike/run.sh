@@ -36,6 +36,9 @@ USAGE
 
 running() { [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = "true" ]; }
 
+# The bracket keeps grep from matching its own command line.
+keepalive_running() { docker exec "$name" sh -c 'ps ax | grep -q "[7]0-keepalive.sh"' 2>/dev/null; }
+
 need_up() {
   if ! running; then
     echo "Container '$name' is not running. Run: spike/run.sh up" >&2
@@ -75,6 +78,10 @@ case "$cmd" in
       -v "$here/probes:/probes:ro" \
       "$image"
     echo "Started. CLI version: $(docker exec "$name" claude --version 2>&1)"
+    if [ -f "$out/70-keepalive/log.jsonl" ]; then
+      echo "NOTE: a longevity run was recorded before, and does not survive a"
+      echo "      container restart. Restart it with: spike/run.sh keepalive"
+    fi
     echo "Next: spike/run.sh offline   (then: login)"
     ;;
   login)
@@ -114,16 +121,58 @@ case "$cmd" in
     ;;
   keepalive)
     need_up
-    docker exec -d "$name" bash -c \
+    if keepalive_running; then
+      echo "Longevity test is already running."
+      exit 0
+    fi
+    # The redirect below is evaluated by the shell before the script runs, so
+    # the directory has to exist first. It used to be created by the script
+    # itself, which meant the whole command failed silently under `exec -d`.
+    docker exec "$name" mkdir -p /out/70-keepalive
+    docker exec -d "$name" sh -c \
       "nohup bash /probes/70-keepalive.sh /out ${2:-14400} >> /out/70-keepalive/nohup.log 2>&1"
-    echo "Longevity test started. Check with: spike/run.sh keepalive-log"
-    echo "Leave it running for weeks; it also captures real failure shapes."
+    # `exec -d` reports nothing about what happened, so check rather than claim.
+    sleep 3
+    if keepalive_running; then
+      echo "Longevity test started (interval ${2:-14400}s). Check: spike/run.sh keepalive-status"
+      echo "Leave it running for weeks; it also captures real failure shapes."
+    else
+      echo "Longevity test failed to start. Last output:" >&2
+      docker exec "$name" sh -c 'tail -20 /out/70-keepalive/nohup.log' 2>&1 >&2
+      exit 1
+    fi
+    ;;
+  keepalive-status)
+    need_up
+    if keepalive_running; then
+      echo "running"
+    else
+      echo "NOT running (start it with: spike/run.sh keepalive)"
+    fi
+    if [ -f "$out/70-keepalive/log.jsonl" ]; then
+      echo "checks recorded: $(wc -l < "$out/70-keepalive/log.jsonl")"
+      echo "last check:"
+      tail -1 "$out/70-keepalive/log.jsonl"
+    else
+      echo "no checks recorded yet"
+    fi
+    if [ -d "$out/70-keepalive/failures" ]; then
+      echo "failures captured: $(find "$out/70-keepalive/failures" -name '*-stream.jsonl' | wc -l)"
+    fi
+    ;;
+  keepalive-stop)
+    need_up
+    docker exec "$name" pkill -f 70-keepalive.sh && echo "stopped." || echo "was not running."
     ;;
   keepalive-log)
     tail -f "$out/70-keepalive/log.jsonl"
     ;;
   results)
     if [ ! -d "$out" ]; then echo "Nothing captured yet."; exit 0; fi
+    if [ -f "$out/70-keepalive/log.jsonl" ] && ! keepalive_running; then
+      echo "WARNING: the longevity test has stopped. Restart: spike/run.sh keepalive"
+      echo
+    fi
     find "$out" -name SUMMARY.txt | sort | while read -r f; do
       echo "=== ${f#"$out"/} ==="
     done

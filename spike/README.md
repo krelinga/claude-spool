@@ -42,6 +42,13 @@ race the design avoids (§3.2).
 - Probe 70 doubles as the error-shape capture: any failed check saves the full
   stream under `out/70-keepalive/failures/`. A genuine login expiry or usage
   limit is the one thing no probe can force.
+- **The longevity test does not survive a container restart.** It runs via
+  `docker exec` inside `spool-spike`, so stopping the container (or rebooting)
+  kills it silently. `spike/run.sh keepalive-status` says whether it is alive
+  and how many checks it has recorded; `results` warns if it has died. Check on
+  it occasionally rather than assuming weeks of data are accumulating.
+- Each check makes one small Haiku request, so roughly six a day at the default
+  4h interval.
 - For the idleness question in §6 item 7, run a second container with
   `SPIKE_CONTAINER=spool-spike-idle spike/run.sh up` and never start keepalive
   on it.
