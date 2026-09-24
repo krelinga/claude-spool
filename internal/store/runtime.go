@@ -236,3 +236,32 @@ func (s *Store) Stats(ctx context.Context, queue string, now time.Time) (QueueSt
 	}
 	return st, nil
 }
+
+// JobCount is one row of the jobs-by-outcome breakdown behind
+// spool_jobs_total.
+type JobCount struct {
+	Queue     string
+	Status    JobStatus
+	ErrorKind ErrorKind
+	Count     int
+}
+
+func (s *Store) JobCounts(ctx context.Context) ([]JobCount, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT queue, status, COALESCE(error_kind, ''), COUNT(*)
+		FROM jobs GROUP BY queue, status, error_kind
+		ORDER BY queue, status, error_kind`)
+	if err != nil {
+		return nil, fmt.Errorf("job counts: %w", err)
+	}
+	defer rows.Close()
+	var out []JobCount
+	for rows.Next() {
+		var c JobCount
+		if err := rows.Scan(&c.Queue, &c.Status, &c.ErrorKind, &c.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

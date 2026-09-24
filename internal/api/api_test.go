@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/krelinga/claude-spool-be/internal/config"
+	"github.com/krelinga/claude-spool-be/internal/event"
 	"github.com/krelinga/claude-spool-be/internal/store"
 )
 
@@ -61,10 +64,11 @@ func (f *fakeExec) Running() (string, string, bool) {
 }
 
 type apiHarness struct {
-	srv  http.Handler
-	st   *store.Store
-	cfg  *config.Config
-	exec *fakeExec
+	srv    http.Handler
+	st     *store.Store
+	cfg    *config.Config
+	exec   *fakeExec
+	broker *event.Broker
 }
 
 func newAPI(t *testing.T) *apiHarness {
@@ -84,9 +88,11 @@ func newAPI(t *testing.T) *apiHarness {
 		t.Fatal(err)
 	}
 	ex := &fakeExec{}
-	s := New(cfg, st, func() *config.QueueSet { return qs }, ex,
+	broker := event.NewBroker()
+	notifier := event.NewNotifier(cfg, func() *config.QueueSet { return qs }, broker)
+	s := New(cfg, st, func() *config.QueueSet { return qs }, ex, notifier, broker,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return &apiHarness{srv: s.Handler(), st: st, cfg: cfg, exec: ex}
+	return &apiHarness{srv: s.Handler(), st: st, cfg: cfg, exec: ex, broker: broker}
 }
 
 func (h *apiHarness) do(t *testing.T, method, path, token string, body any, headers ...[2]string) *httptest.ResponseRecorder {
@@ -513,5 +519,188 @@ func TestMethodNotAllowed(t *testing.T) {
 	h := newAPI(t)
 	if w := h.do(t, "DELETE", "/v1/queues/media", adminToken, nil); w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("DELETE = %d, want 405", w.Code)
+	}
+}
+
+// --- events and metrics ---
+
+func TestCancelEmitsEvent(t *testing.T) {
+	h := newAPI(t)
+	events, stop := h.broker.Subscribe()
+	defer stop()
+
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{Input: "Dune"}))
+	h.do(t, "POST", "/v1/jobs/"+created.ID+"/cancel", adminToken, nil)
+
+	select {
+	case env := <-events:
+		if env.Event != event.JobCancelled || env.JobID != created.ID {
+			t.Errorf("envelope = %+v", env)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("cancellation did not emit an event")
+	}
+}
+
+func TestEventStream(t *testing.T) {
+	h := newAPI(t)
+	srv := httptest.NewServer(h.srv)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	// The stream opens with a comment so a client knows it is connected.
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatalf("no preamble: %v", err)
+	}
+
+	// Publishing requires a subscriber to exist first, which the read above
+	// guarantees.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		h.broker.Publish(event.Envelope{
+			Event: event.JobSucceeded, EventID: "ev_test", At: time.Now(),
+			Queue: "media", JobID: "01A",
+		})
+	}()
+
+	var sawEvent, sawData bool
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !(sawEvent && sawData) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if strings.HasPrefix(line, "event: job.succeeded") {
+			sawEvent = true
+		}
+		if strings.HasPrefix(line, "data: ") {
+			var env event.Envelope
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &env); err != nil {
+				t.Errorf("data is not a valid envelope: %v", err)
+			}
+			if env.JobID == "01A" {
+				sawData = true
+			}
+		}
+	}
+	if !sawEvent || !sawData {
+		t.Errorf("stream did not carry the event (event=%v data=%v)", sawEvent, sawData)
+	}
+}
+
+// A scoped token must not see other queues' events on the live stream either.
+func TestEventStreamRespectsTokenScope(t *testing.T) {
+	h := newAPI(t)
+	srv := httptest.NewServer(h.srv)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+scopedToken)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	reader.ReadString('\n')
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		h.broker.Publish(event.Envelope{Event: event.JobSucceeded, EventID: "ev_adhoc",
+			At: time.Now(), Queue: "adhoc", JobID: "01ADHOC"})
+		h.broker.Publish(event.Envelope{Event: event.JobSucceeded, EventID: "ev_media",
+			At: time.Now(), Queue: "media", JobID: "01MEDIA"})
+	}()
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if strings.Contains(line, "01ADHOC") {
+			t.Fatal("scoped token received another queue's event")
+		}
+		if strings.Contains(line, "01MEDIA") {
+			return // its own queue arrived, and adhoc did not
+		}
+	}
+	t.Error("scoped token never received its own queue's event")
+}
+
+func TestMetrics(t *testing.T) {
+	h := newAPI(t)
+	h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{Input: "x"})
+	h.do(t, "POST", "/v1/queues/media/pause", adminToken, nil)
+
+	// Prometheus scrapes this without a token.
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	h.srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", w.Code, w.Body)
+	}
+	body := w.Body.String()
+
+	for _, want := range []string{
+		`spool_queue_depth{queue="media"} 1`,
+		`spool_queue_depth{queue="adhoc"} 0`,
+		`spool_queue_paused{queue="media"} 1`,
+		`spool_queue_paused{queue="adhoc"} 0`,
+		`spool_executor_state{state="ready"} 1`,
+		`spool_executor_state{state="blocked_auth"} 0`,
+		"spool_webhook_outbox",
+		"spool_oldest_queued_age_seconds",
+		"# TYPE spool_queue_depth gauge",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+	// Every metric must be preceded by HELP and TYPE, or Prometheus complains.
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "spool_") {
+			name := strings.FieldsFunc(line, func(r rune) bool { return r == '{' || r == ' ' })[0]
+			if !strings.Contains(body, "# TYPE "+name+" ") {
+				t.Errorf("metric %s has no TYPE line", name)
+			}
+		}
+	}
+}
+
+func TestMetricsReflectsBlockedExecutor(t *testing.T) {
+	h := newAPI(t)
+	until := time.Now().Add(time.Hour)
+	h.st.SetExecutorState(t.Context(), store.ExecBlockedUsage, "limit", &until)
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	h.srv.ServeHTTP(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, `spool_executor_state{state="blocked_usage"} 1`) {
+		t.Errorf("blocked state not reported:\n%s", body)
+	}
+	if !strings.Contains(body, `spool_executor_state{state="ready"} 0`) {
+		t.Error("ready should be 0 while blocked")
 	}
 }

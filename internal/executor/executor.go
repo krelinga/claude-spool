@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/krelinga/claude-spool-be/internal/event"
+
 	"github.com/krelinga/claude-spool-be/internal/config"
 	"github.com/krelinga/claude-spool-be/internal/sched"
 	"github.com/krelinga/claude-spool-be/internal/store"
@@ -37,7 +39,10 @@ type Executor struct {
 	st     *store.Store
 	log    *slog.Logger
 	queues func() *config.QueueSet
-	now    func() time.Time
+	notify *event.Notifier
+	// wakeSender nudges the webhook sender once notifications are committed.
+	wakeSender func()
+	now        func() time.Time
 
 	wake chan struct{}
 
@@ -58,11 +63,18 @@ func WithClock(now func() time.Time) Option {
 	return func(e *Executor) { e.now = now }
 }
 
-func New(cfg *config.Config, st *store.Store, queues func() *config.QueueSet, log *slog.Logger, opts ...Option) *Executor {
+// WithSenderWake registers a callback to nudge the webhook sender as soon as
+// deliveries are committed, instead of waiting for its poll.
+func WithSenderWake(f func()) Option {
+	return func(e *Executor) { e.wakeSender = f }
+}
+
+func New(cfg *config.Config, st *store.Store, queues func() *config.QueueSet, notify *event.Notifier, log *slog.Logger, opts ...Option) *Executor {
 	e := &Executor{
-		cfg: cfg, st: st, log: log, queues: queues,
-		now:  time.Now,
-		wake: make(chan struct{}, 1),
+		cfg: cfg, st: st, log: log, queues: queues, notify: notify,
+		wakeSender: func() {},
+		now:        time.Now,
+		wake:       make(chan struct{}, 1),
 	}
 	for _, o := range opts {
 		o(e)
@@ -98,6 +110,7 @@ func (e *Executor) Recover(ctx context.Context) error {
 	}
 	for _, id := range ids {
 		e.log.Warn("job interrupted by restart", "job", id)
+		e.notifyJob(ctx, id)
 	}
 	// A queue that vanished from config while holding work fails loudly rather
 	// than leaving jobs queued forever (§3.3).
@@ -116,8 +129,32 @@ func (e *Executor) Recover(ctx context.Context) error {
 			return err
 		}
 		e.log.Warn("failed jobs for removed queue", "queue", queue, "jobs", len(failed))
+		for _, id := range failed {
+			e.notifyJob(ctx, id)
+		}
 	}
 	return nil
+}
+
+// notifyJob emits the event for a job whose terminal state was written outside
+// the executor's own finish path (restart recovery, queue removal). It is a
+// separate transaction from the status change, so a crash in between loses the
+// notification but never the job.
+func (e *Executor) notifyJob(ctx context.Context, id string) {
+	j, err := e.st.Get(ctx, id)
+	if err != nil {
+		e.log.Error("could not load job to notify", "job", id, "error", err)
+		return
+	}
+	env, ok := e.notify.JobEnvelope(j)
+	if !ok {
+		return
+	}
+	if err := e.st.EnqueueDeliveries(ctx, e.notify.Deliveries(env), e.now()); err != nil {
+		e.log.Error("could not enqueue notification", "job", id, "error", err)
+		return
+	}
+	e.wakeSender()
 }
 
 // Run is the scheduling loop. It returns when ctx is cancelled.

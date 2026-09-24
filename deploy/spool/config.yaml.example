@@ -24,3 +24,25 @@ tokens:
   - name: ios-share
     token_env: SPOOL_IOS_TOKEN
     queues: [media]
+
+# Where Spool is reachable from outside. Used to build the re-login link in an
+# auth.required notification, so the phone can act on it.
+public_url: "https://spool.lan"
+
+# Webhook receivers are global. Which *job* events reach them is filtered by
+# each queue's notify list in queues.yaml; service events (auth.required,
+# executor.blocked_usage, queue.auto_paused) always go to all of them.
+#
+# Every delivery is signed: HMAC-SHA256 over "<X-Spool-Timestamp>.<body>", hex
+# encoded, in X-Spool-Signature as "sha256=...". The timestamp is inside the
+# signed material so a captured delivery cannot be replayed later.
+webhooks:
+  - name: notify
+    url: https://example.invalid/spool-hook
+    secret_env: SPOOL_WEBHOOK_SECRET
+    # Optional: narrow this receiver further. Omit to accept whatever the
+    # queues subscribe it to, plus all service events.
+    # events: [job.failed, job.needs_input, auth.required]
+
+# How long a failed delivery keeps being retried before it is marked dead.
+webhook_retry_window: 24h

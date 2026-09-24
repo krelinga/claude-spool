@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +28,47 @@ type Config struct {
 	DataDir string        `yaml:"data_dir"`
 	Claude  ClaudeConfig  `yaml:"claude"`
 	Tokens  []TokenConfig `yaml:"tokens"`
+
+	Webhooks []WebhookConfig `yaml:"webhooks"`
+	// WebhookRetryWindow is how long a delivery keeps being retried before it
+	// is marked dead (§3.7 says 24h).
+	WebhookRetryWindow Duration `yaml:"webhook_retry_window"`
+	// PublicURL is the externally reachable base URL, used to build the
+	// re-login link in an auth.required notification so it is actionable from
+	// a phone.
+	PublicURL string `yaml:"public_url"`
+}
+
+// WebhookConfig is one receiver. Receivers are global; which job events reach
+// them is filtered by each queue's notify list, while service events always go
+// to all of them (§3.7).
+type WebhookConfig struct {
+	Name      string `yaml:"name"`
+	URL       string `yaml:"url"`
+	Secret    string `yaml:"secret"`
+	SecretEnv string `yaml:"secret_env"`
+	// Events optionally narrows this receiver further. Empty means "whatever
+	// the queues subscribe it to, plus all service events".
+	Events []string `yaml:"events"`
+
+	secret string
+}
+
+// HMACSecret returns the resolved signing secret.
+func (w *WebhookConfig) HMACSecret() string { return w.secret }
+
+// Wants reports whether this receiver accepts an event type, per its own
+// Events filter. Per-queue subscription is applied separately.
+func (w *WebhookConfig) Wants(event string) bool {
+	if len(w.Events) == 0 {
+		return true
+	}
+	for _, e := range w.Events {
+		if e == event {
+			return true
+		}
+	}
+	return false
 }
 
 type ClaudeConfig struct {
@@ -104,6 +147,9 @@ func (c *Config) applyDefaults() {
 	if c.Claude.CredentialMode == ModeLogin {
 		c.Claude.SyncSkills = true
 	}
+	if c.WebhookRetryWindow == 0 {
+		c.WebhookRetryWindow = Duration(24 * time.Hour)
+	}
 }
 
 func (c *Config) resolveTokens() error {
@@ -120,6 +166,21 @@ func (c *Config) resolveTokens() error {
 			t.secret = v
 		default:
 			t.secret = t.Token
+		}
+	}
+	for i := range c.Webhooks {
+		w := &c.Webhooks[i]
+		switch {
+		case w.Secret != "" && w.SecretEnv != "":
+			return fmt.Errorf("webhook %q: set secret or secret_env, not both", w.Name)
+		case w.SecretEnv != "":
+			v := os.Getenv(w.SecretEnv)
+			if v == "" {
+				return fmt.Errorf("webhook %q: env %s is empty", w.Name, w.SecretEnv)
+			}
+			w.secret = v
+		default:
+			w.secret = w.Secret
 		}
 	}
 	return nil
@@ -149,6 +210,28 @@ func (c *Config) validate() error {
 		if len(t.Queues) == 0 {
 			return fmt.Errorf("token %q: needs queues (use [\"*\"] for all)", t.Name)
 		}
+	}
+	seenHook := map[string]bool{}
+	for _, w := range c.Webhooks {
+		if w.Name == "" {
+			return fmt.Errorf("every webhook needs a name")
+		}
+		if seenHook[w.Name] {
+			return fmt.Errorf("duplicate webhook name %q", w.Name)
+		}
+		seenHook[w.Name] = true
+		u, err := url.Parse(w.URL)
+		if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("webhook %q: url must be an absolute http(s) URL", w.Name)
+		}
+		// Every event is signed, so a receiver without a secret cannot verify
+		// anything and would accept a forged notification.
+		if len(w.secret) < 16 {
+			return fmt.Errorf("webhook %q: secret must be at least 16 characters", w.Name)
+		}
+	}
+	if c.WebhookRetryWindow <= 0 {
+		return fmt.Errorf("webhook_retry_window must be positive")
 	}
 	return nil
 }

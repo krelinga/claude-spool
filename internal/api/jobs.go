@@ -205,6 +205,14 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, "could not read job", err)
 		return
 	}
+	// Cancellation is a terminal state like any other, so it notifies. Enqueued
+	// separately from the status change: losing the notification on a crash is
+	// tolerable, losing the cancellation is not.
+	if env, ok := s.notify.JobEnvelope(updated); ok {
+		if err := s.st.EnqueueDeliveries(r.Context(), s.notify.Deliveries(env), s.now()); err != nil {
+			s.log.Error("could not enqueue cancellation notification", "job", j.ID, "error", err)
+		}
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 

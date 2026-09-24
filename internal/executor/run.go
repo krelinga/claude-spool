@@ -17,6 +17,7 @@ import (
 
 	"github.com/krelinga/claude-spool-be/internal/claudecli"
 	"github.com/krelinga/claude-spool-be/internal/config"
+	"github.com/krelinga/claude-spool-be/internal/event"
 	"github.com/krelinga/claude-spool-be/internal/store"
 )
 
@@ -76,6 +77,19 @@ func (e *Executor) runJob(ctx context.Context, job *store.Job) {
 			log.Error("could not auto-pause queue", "error", err)
 		} else {
 			log.Warn("queue auto-paused", "reason", res.ErrorMessage)
+			env := e.notify.Envelope(event.QueueAutoPaused)
+			env.Queue = job.Queue
+			env.QueueRef = &event.QueueInfo{
+				Name: job.Queue, Paused: true, Reason: res.ErrorMessage,
+			}
+			if depths, err := e.st.Depths(ctx); err == nil {
+				env.QueueRef.Depth = depths[job.Queue]
+			}
+			if err := e.st.EnqueueDeliveries(ctx, e.notify.Deliveries(env), e.now()); err != nil {
+				log.Error("could not enqueue queue.auto_paused", "error", err)
+			} else {
+				e.wakeSender()
+			}
 		}
 	}
 
@@ -87,8 +101,31 @@ func (e *Executor) finish(ctx context.Context, job *store.Job, res store.Result)
 	// has to land, or the job would look interrupted when it actually finished.
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := e.st.Finish(writeCtx, job.ID, res, e.now()); err != nil {
+
+	// The notification is built from the job as it will be once written, and
+	// committed in the same transaction: a finished job always has its event
+	// queued, and a rolled-back result never emits one (§3.6).
+	finished := *job
+	finished.Status = res.Status
+	finished.Summary = res.Summary
+	finished.ErrorKind = res.ErrorKind
+	finished.ErrorMessage = res.ErrorMessage
+	finished.Outcome = res.Outcome
+	finished.CostUSD = res.CostUSD
+	finished.NumTurns = res.NumTurns
+	now := e.now()
+	finished.FinishedAt = &now
+
+	var deliveries []store.Delivery
+	if env, ok := e.notify.JobEnvelope(&finished); ok {
+		deliveries = e.notify.Deliveries(env)
+	}
+	if err := e.st.FinishWithDeliveries(writeCtx, job.ID, res, deliveries, now); err != nil {
 		e.log.Error("could not record job result", "job", job.ID, "error", err)
+		return
+	}
+	if len(deliveries) > 0 {
+		e.wakeSender()
 	}
 }
 
@@ -106,11 +143,60 @@ func (e *Executor) block(ctx context.Context, kind store.ErrorKind, reason strin
 		// An auth block waits for a human; a timer would only mask it.
 		resetAt = nil
 	}
+
+	// Read the state we are leaving, so the notification fires once per
+	// incident rather than once per failed job (§3.2).
+	prev, err := e.st.ExecutorState(ctx)
+	if err != nil {
+		log.Error("could not read executor state", "error", err)
+	}
 	if err := e.st.SetExecutorState(ctx, state, reason, resetAt); err != nil {
 		log.Error("could not set executor state", "error", err)
 		return
 	}
 	log.Warn("executor blocked", "state", state, "reason", reason, "until", resetAt)
+
+	if prev.State == state {
+		return
+	}
+	e.emitBlocked(ctx, state, reason, resetAt, log)
+}
+
+func (e *Executor) emitBlocked(ctx context.Context, state store.ExecutorState, reason string, until *time.Time, log logger) {
+	depth := 0
+	if depths, err := e.st.Depths(ctx); err == nil {
+		for _, n := range depths {
+			depth += n
+		}
+	}
+	var env event.Envelope
+	if state == store.ExecBlockedAuth {
+		env = e.notify.Envelope(event.AuthRequired)
+		since := e.now().UTC()
+		env.Auth = &event.AuthInfo{
+			State: "expired", Since: &since, QueuedJobs: depth,
+			LoginURL: e.loginURL(),
+		}
+	} else {
+		env = e.notify.Envelope(event.ExecutorBlockedUsage)
+		env.Executor = &event.ExecutorInfo{
+			State: string(state), Reason: reason, BlockedUntil: until, QueuedJobs: depth,
+		}
+	}
+	if err := e.st.EnqueueDeliveries(ctx, e.notify.Deliveries(env), e.now()); err != nil {
+		log.Error("could not enqueue service notification", "event", env.Event, "error", err)
+		return
+	}
+	e.wakeSender()
+}
+
+// loginURL points at the re-login flow so the notification is actionable from
+// a phone. The endpoint itself arrives with the auth manager (§7 step 3).
+func (e *Executor) loginURL() string {
+	if e.cfg.PublicURL == "" {
+		return ""
+	}
+	return strings.TrimSuffix(e.cfg.PublicURL, "/") + "/v1/auth/login"
 }
 
 type logger interface {

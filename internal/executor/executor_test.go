@@ -2,15 +2,18 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/krelinga/claude-spool-be/internal/config"
+	"github.com/krelinga/claude-spool-be/internal/event"
 	"github.com/krelinga/claude-spool-be/internal/store"
 )
 
@@ -87,6 +90,7 @@ queues:
     allowed_tools: [Skill]
     timeout: 5s
     weight: 1
+    notify: [job.succeeded, job.failed, job.needs_input, job.interrupted]
   adhoc:
     prompt: "{{input}}"
     allowed_tools: [Skill]
@@ -95,11 +99,45 @@ queues:
 `
 
 type harness struct {
-	e    *Executor
-	st   *store.Store
-	cfg  *config.Config
-	dump string
-	tmp  string
+	e      *Executor
+	st     *store.Store
+	cfg    *config.Config
+	dump   string
+	tmp    string
+	broker *event.Broker
+	// collected records everything published to the SSE broker, so tests can
+	// assert on notifications without standing up a webhook receiver.
+	collected *collector
+}
+
+// collector is the concurrency-safe sink for published events.
+type collected = event.Envelope
+
+type collector struct {
+	mu   sync.Mutex
+	seen []collected
+}
+
+func (c *collector) add(env collected) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seen = append(c.seen, env)
+}
+
+func (c *collector) all() []collected {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]collected{}, c.seen...)
+}
+
+func (c *collector) count(t event.Type) int {
+	n := 0
+	for _, env := range c.all() {
+		if env.Event == t {
+			n++
+		}
+	}
+	return n
 }
 
 func newHarness(t *testing.T) *harness {
@@ -118,6 +156,10 @@ func newHarness(t *testing.T) *harness {
 	data := filepath.Join(tmp, "data")
 	cfg := &config.Config{
 		DataDir: data,
+		Webhooks: []config.WebhookConfig{{
+			Name: "test", URL: "http://127.0.0.1:1/hook", Secret: "test-secret-0123456789",
+		}},
+		WebhookRetryWindow: config.Duration(24 * time.Hour),
 		Claude: config.ClaudeConfig{
 			Binary: bin, ConfigDir: filepath.Join(data, "claude"),
 			CredentialMode: config.ModeLogin, SyncSkills: true,
@@ -136,8 +178,51 @@ func newHarness(t *testing.T) *harness {
 
 	t.Setenv("SPOOL_TEST_DUMP", dump)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	e := New(cfg, st, func() *config.QueueSet { return qs }, log)
-	return &harness{e: e, st: st, cfg: cfg, dump: dump, tmp: tmp}
+
+	broker := event.NewBroker()
+	events, stop := broker.Subscribe()
+	coll := &collector{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for env := range events {
+			coll.add(env)
+		}
+	}()
+	t.Cleanup(func() { stop(); <-done })
+
+	notifier := event.NewNotifier(cfg, func() *config.QueueSet { return qs }, broker)
+	e := New(cfg, st, func() *config.QueueSet { return qs }, notifier, log)
+	return &harness{e: e, st: st, cfg: cfg, dump: dump, tmp: tmp, broker: broker, collected: coll}
+}
+
+// events returns the envelopes published so far, keyed by type. It waits
+// briefly because the broker hands off through a goroutine.
+func (h *harness) events(t *testing.T) map[event.Type]event.Envelope {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(h.collected.all()) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	out := map[event.Type]event.Envelope{}
+	for _, env := range h.collected.all() {
+		out[env.Event] = env
+	}
+	return out
+}
+
+// waitForEvent waits until at least n events of a type have arrived, so a test
+// asserting "exactly once" cannot pass merely by reading too early.
+func (h *harness) waitForEvent(t *testing.T, typ event.Type, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if h.collected.count(typ) >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected %d %s events, saw %d", n, typ, h.collected.count(typ))
 }
 
 func (h *harness) submit(t *testing.T, id, queue, input string) *store.Job {
@@ -480,5 +565,149 @@ func TestRunningReportsCurrentJob(t *testing.T) {
 	<-done
 	if _, _, ok := h.e.Running(); ok {
 		t.Error("Running should be clear once the job finishes")
+	}
+}
+
+// --- notifications ---
+
+func TestJobSuccessEmitsEvent(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "media", "Dune")
+	h.stepOnce(t)
+
+	env, ok := h.events(t)[event.JobSucceeded]
+	if !ok {
+		t.Fatalf("no job.succeeded event; saw %v", h.collected.all())
+	}
+	if env.Queue != "media" || env.JobID != "01A" {
+		t.Errorf("envelope = %+v", env)
+	}
+	if env.EventID == "" || env.At.IsZero() {
+		t.Error("envelope needs an event_id and timestamp for dedupe")
+	}
+	if env.Job == nil || env.Job.Summary != "Added it" {
+		t.Errorf("job info = %+v", env.Job)
+	}
+	if env.Job.Status != store.StatusSucceeded {
+		t.Errorf("status = %v", env.Job.Status)
+	}
+}
+
+// The notification must be committed with the result, not after it.
+func TestFinishAndNotificationAreOneTransaction(t *testing.T) {
+	h := newHarness(t)
+	// media's notify list (testQueues) includes job.succeeded.
+	h.submit(t, "01A", "media", "Dune")
+	h.stepOnce(t)
+
+	j := h.get(t, "01A")
+	if j.Status != store.StatusSucceeded {
+		t.Fatalf("status = %v", j.Status)
+	}
+	rows, err := h.st.ClaimDueDeliveries(context.Background(), time.Now(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("outbox has %d rows, want 1 (one receiver, subscribed)", len(rows))
+	}
+	if rows[0].Event != string(event.JobSucceeded) || rows[0].JobID != "01A" {
+		t.Errorf("outbox row = %+v", rows[0])
+	}
+	var env event.Envelope
+	if err := json.Unmarshal(rows[0].Payload, &env); err != nil {
+		t.Fatalf("outbox payload is not a valid envelope: %v", err)
+	}
+	if env.Job == nil || env.Job.Summary != "Added it" {
+		t.Errorf("payload job = %+v", env.Job)
+	}
+}
+
+// A queue that does not subscribe to an event produces no outbox row, but the
+// event still reaches the live SSE stream.
+func TestUnsubscribedEventStillReachesSSE(t *testing.T) {
+	h := newHarness(t)
+	// adhoc's notify list omits job.succeeded in testQueues.
+	h.submit(t, "01A", "adhoc", "hello")
+	h.stepOnce(t)
+
+	if _, ok := h.events(t)[event.JobSucceeded]; !ok {
+		t.Error("event should still be published to SSE subscribers")
+	}
+	rows, _ := h.st.ClaimDueDeliveries(context.Background(), time.Now(), 10)
+	for _, r := range rows {
+		if r.Queue == "adhoc" {
+			t.Errorf("unsubscribed queue produced an outbox row: %+v", r)
+		}
+	}
+}
+
+// One auth.required per incident, not one per failed job (§3.2).
+func TestAuthRequiredFiresOncePerIncident(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "adhoc", "AUTHDIRTY")
+	h.submit(t, "01B", "adhoc", "AUTHDIRTY")
+
+	h.stepOnce(t)
+	// The executor is now blocked, so clear it and fail a second job the same way.
+	h.st.SetExecutorState(context.Background(), store.ExecBlockedAuth, "still expired", nil)
+	h.stepOnce(t)
+
+	h.waitForEvent(t, event.AuthRequired, 1)
+	// Give a spurious second event time to show up before asserting "once".
+	time.Sleep(100 * time.Millisecond)
+	if count := h.collected.count(event.AuthRequired); count != 1 {
+		t.Errorf("auth.required fired %d times, want 1 per incident", count)
+	}
+	env := h.events(t)[event.AuthRequired]
+	if env.Auth == nil {
+		t.Fatal("auth.required carries no auth block")
+	}
+	if env.Auth.QueuedJobs == 0 {
+		t.Error("auth.required should report how much work is waiting")
+	}
+}
+
+func TestCapabilityMissingEmitsQueueAutoPaused(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "media", "NOCONNECTOR")
+	h.stepOnce(t)
+
+	env, ok := h.events(t)[event.QueueAutoPaused]
+	if !ok {
+		t.Fatalf("no queue.auto_paused event; saw %v", h.collected.all())
+	}
+	if env.QueueRef == nil || !env.QueueRef.Paused || env.QueueRef.Name != "media" {
+		t.Errorf("queue info = %+v", env.QueueRef)
+	}
+	if env.QueueRef.Reason == "" {
+		t.Error("auto-pause should say why")
+	}
+}
+
+func TestUsageLimitEmitsExecutorBlocked(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "adhoc", "USAGE")
+	h.stepOnce(t)
+
+	env, ok := h.events(t)[event.ExecutorBlockedUsage]
+	if !ok {
+		t.Fatalf("no executor.blocked_usage event; saw %v", h.collected.all())
+	}
+	if env.Executor == nil || env.Executor.BlockedUntil == nil {
+		t.Errorf("executor info = %+v", env.Executor)
+	}
+}
+
+func TestInterruptedJobEmitsEvent(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "media", "Dune")
+	h.st.Claim(context.Background(), "media", time.Now())
+
+	if err := h.e.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.events(t)[event.JobInterrupted]; !ok {
+		t.Errorf("restart recovery should notify; saw %v", h.collected.all())
 	}
 }

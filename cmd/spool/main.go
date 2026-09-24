@@ -17,8 +17,10 @@ import (
 
 	"github.com/krelinga/claude-spool-be/internal/api"
 	"github.com/krelinga/claude-spool-be/internal/config"
+	"github.com/krelinga/claude-spool-be/internal/event"
 	"github.com/krelinga/claude-spool-be/internal/executor"
 	"github.com/krelinga/claude-spool-be/internal/store"
+	"github.com/krelinga/claude-spool-be/internal/webhook"
 )
 
 func main() {
@@ -48,8 +50,8 @@ func run() error {
 		return err
 	}
 	if *checkOnly {
-		fmt.Printf("config ok: %d queues (%v), %d tokens\n",
-			len(queues.Queues), queues.Names(), len(cfg.Tokens))
+		fmt.Printf("config ok: %d queues (%v), %d tokens, %d webhook receivers\n",
+			len(queues.Queues), queues.Names(), len(cfg.Tokens), len(cfg.Webhooks))
 		return nil
 	}
 
@@ -78,7 +80,14 @@ func run() error {
 	current.Store(queues)
 	queueSet := func() *config.QueueSet { return current.Load() }
 
-	exec := executor.New(cfg, st, queueSet, log)
+	// The broker is the live SSE fan-out; the notifier decides who hears what
+	// and writes outbox rows; the sender drains the outbox. The executor only
+	// ever writes rows, so a down receiver cannot hold up a job (§3.7).
+	broker := event.NewBroker()
+	notifier := event.NewNotifier(cfg, queueSet, broker)
+	sender := webhook.New(cfg, st, log)
+
+	exec := executor.New(cfg, st, queueSet, notifier, log, executor.WithSenderWake(sender.Wake))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -88,16 +97,16 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(cfg, st, queueSet, exec, log).Handler(),
+		Handler:           api.New(cfg, st, queueSet, exec, notifier, broker, log).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No write timeout: transcript reads stream, and a live tail will hold
 		// the connection open once SSE lands.
 	}
 
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 	go func() {
 		log.Info("listening", "addr", cfg.Listen, "queues", queueSet().Names(),
-			"credential_mode", cfg.Claude.CredentialMode)
+			"credential_mode", cfg.Claude.CredentialMode, "webhook_receivers", len(cfg.Webhooks))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- fmt.Errorf("http server: %w", err)
 		}
@@ -105,6 +114,11 @@ func run() error {
 	go func() {
 		if err := exec.Run(ctx); err != nil {
 			errs <- fmt.Errorf("executor: %w", err)
+		}
+	}()
+	go func() {
+		if err := sender.Run(ctx); err != nil {
+			errs <- fmt.Errorf("webhook sender: %w", err)
 		}
 	}()
 

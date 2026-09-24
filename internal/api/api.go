@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/krelinga/claude-spool-be/internal/config"
+	"github.com/krelinga/claude-spool-be/internal/event"
 	"github.com/krelinga/claude-spool-be/internal/store"
 )
 
@@ -30,12 +31,18 @@ type Server struct {
 	st     *store.Store
 	queues func() *config.QueueSet
 	exec   Executor
+	notify *event.Notifier
+	broker *event.Broker
 	log    *slog.Logger
 	now    func() time.Time
 }
 
-func New(cfg *config.Config, st *store.Store, queues func() *config.QueueSet, exec Executor, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, st: st, queues: queues, exec: exec, log: log, now: time.Now}
+func New(cfg *config.Config, st *store.Store, queues func() *config.QueueSet, exec Executor,
+	notify *event.Notifier, broker *event.Broker, log *slog.Logger) *Server {
+	return &Server{
+		cfg: cfg, st: st, queues: queues, exec: exec,
+		notify: notify, broker: broker, log: log, now: time.Now,
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -43,6 +50,10 @@ func (s *Server) Handler() http.Handler {
 
 	// Unauthenticated: liveness only, nothing about the workload.
 	mux.HandleFunc("GET /healthz", s.healthz)
+	// Prometheus scrapes without a bearer token in practice, and the design
+	// puts this outside /v1 (§3.7). It exposes counts and states, never job
+	// content. Keep it on the LAN side of Caddy.
+	mux.HandleFunc("GET /metrics", s.metrics)
 
 	v1 := http.NewServeMux()
 	v1.HandleFunc("GET /v1/queues", s.listQueues)
@@ -58,6 +69,8 @@ func (s *Server) Handler() http.Handler {
 	v1.HandleFunc("GET /v1/executor", s.getExecutor)
 	v1.HandleFunc("POST /v1/executor/pause", s.pauseExecutor)
 	v1.HandleFunc("POST /v1/executor/resume", s.resumeExecutor)
+	v1.HandleFunc("GET /v1/events", s.streamEvents)
+	v1.HandleFunc("GET /v1/metrics", s.metrics)
 
 	mux.Handle("/v1/", s.authenticate(v1))
 	return s.recoverPanics(mux)

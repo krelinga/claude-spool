@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-The §7 **MVP is implemented**: queues from YAML, submit/list/get/cancel, scheduler, executor, classifier, SQLite, bearer tokens, Dockerfile. Not yet built — auth manager (§7 step 3), webhooks/SSE/metrics (step 4), retry/reply and running-job cancel (step 5).
+§7 steps 2 and 4 are implemented: queues from YAML, submit/list/get/cancel, scheduler, executor, classifier, SQLite, bearer tokens, Dockerfile, and reporting (webhook outbox with HMAC + retry, SSE, metrics). Not yet built — auth manager (step 3), retry/reply and running-job cancel (step 5), `queues.yaml` hot reload, retention pruning.
 
-**The §6 validation spike has not been run.** Nothing here has touched a real `claude` binary; tests drive a fake CLI. `docs/design/spike.md` maps each open question to the one place in the tree that changes when it is answered. Do the spike before trusting any of it in anger.
+**The §6 spike is partly done.** `spike/` is a working harness; its offline probes have been run against CLI **2.1.282** and already corrected three wrong assumptions — see the "Answered" table in `docs/design/spike.md`. Everything needing a claude.ai login is still open, so the connector tool names, the synced-skill behaviour, and the `structured_output` field name remain guesses.
 
 The design doc is the source of truth for behavior.
 
@@ -24,9 +24,11 @@ go run ./cmd/spool --config deploy/spool/config.yaml --queues deploy/spool/queue
 
 ## Layout
 
-`cmd/spool` wires it together. Under `internal/`: `config` (both YAML files, the template renderer, the config hash), `store` (SQLite, job lifecycle), `sched` (weighted round-robin, pure), `claudecli` (**everything** touching the CLI's flags and output), `executor` (the single global runner), `api` (HTTP).
+`cmd/spool` wires it together. Under `internal/`: `config` (both YAML files, the template renderer, the config hash), `store` (SQLite, job lifecycle, outbox), `sched` (weighted round-robin, pure), `claudecli` (**everything** touching the CLI's flags and output), `executor` (the single global runner), `event` (envelope, routing, SSE broker), `webhook` (outbox sender), `api` (HTTP). `spike/` is the CLI-behaviour harness, not part of the build.
 
-Dependency direction is one-way: `config` and `store` are leaves, `claudecli` imports both, `executor` imports all, `api` imports everything but `executor`'s internals (it sees only a two-method interface).
+Dependency direction is one-way: `config` and `store` are leaves; `claudecli` and `event` import both; `executor` imports those; `api` sees the executor only through a two-method interface.
+
+**Two CLI facts worth not relearning** (both verified, both absent from `claude --help`): `--json-schema` takes **inline JSON** and rejects a file path outright; `--max-turns` and `--append-system-prompt-file` both exist and work. `claude --help` is an incomplete flag list — test by invocation.
 
 ## Toolchain
 
