@@ -43,6 +43,32 @@ about flags, output shapes, or cost.
   LAN-only behind Caddy, so clients assume a tailnet rather than a public
   endpoint.
 
+## Releasing
+
+Each component is released independently with
+[release-please](https://github.com/googleapis/release-please), on trial.
+`release-please-config.json` lists the components and
+`.release-please-manifest.json` holds their current versions.
+
+- **Commit messages must be conventional commits** for release-please to see
+  them: `feat:` bumps the minor version, `fix:` bumps the patch, and anything
+  else (`docs:`, `chore:`, `test:`) releases nothing. Before 1.0, a breaking
+  change (`feat!:`) bumps the minor version, not the major. Plain messages are
+  ignored. Scope is not what assigns a commit to a component; the paths it
+  touches are.
+- **Tags are `<path>/vX.Y.Z`**, such as `backend/v0.2.0`. Go requires this form
+  to resolve the `backend` module, which lives in a subdirectory.
+- **Merging a release PR is the release.** For `backend`, the same workflow
+  then pushes `ghcr.io/krelinga/claude-spool` tagged with the version, the
+  major.minor version, and `latest`, with the Claude Code CLI pinned to the
+  version the spike measured.
+- **`/v1` is the contract between components.** Clients call only `/v1`
+  endpoints, so any client version works against any backend version as long
+  as the backend never breaks `/v1`. That is what makes independent releases
+  safe.
+- `deploy/` and `backend/spike/` are not released. To add a client, add its
+  path to both JSON files.
+
 ## Toolchain
 
 The devcontainer covers everything here: Go for the backend, Node and a browser
