@@ -6,6 +6,7 @@
   "tag-separator": "/",
   "separate-pull-requests": true,
   "bump-minor-pre-major": true,
+  "initial-version": "0.1.0",
   "packages": {
     "backend": {
       "release-type": "go",
