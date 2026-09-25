@@ -18,7 +18,7 @@ matters there, and Claude Code reads the nearest one — so when working inside
 | `backend/` | The Go service: API, scheduler, executor, auth manager. Complete. |
 | `backend/spike/` | Harness that measures real Claude Code CLI behaviour. |
 | `clients/` | API consumers — Drafts actions, and a small re-login web page. |
-| `deploy/` | Operational config: `queues.yaml`, config examples, the real-run driver. |
+| `deploy/` | Operational config: `queues.yaml`, config examples, the real-run driver, and `live-test/` for trying queues against a real login. |
 
 ## Where the design lives
 
@@ -81,10 +81,14 @@ output shapes, or cost.
 
 1. Restart the longevity experiments (below). They measure the one thing still
    unknown, and they only accumulate while running.
-2. Build the clients. `clients/README.md` has the plan. Worth deciding first
-   which queues you want on the phone: the `notion-media`, `notion-ideas` and
-   `notion-places` skills all exist on the account, but only `media` has a queue
-   in `deploy/spool/queues.yaml`.
+2. Live-test the `ideas` and `places` queues with `deploy/live-test/` (its
+   README has the steps), dry run first. `places` in particular leans on its
+   system prompt, because the skill assumes claude.ai's `places_search` tool.
+3. Build the clients. `clients/README.md` has the plan. The phone gets `media`,
+   `ideas` and `places`; `adhoc` was dropped as too open-ended.
+
+**Never test against `deploy/real-run`.** It holds arm 2's idle login, and
+starting it spoils the experiment. `deploy/live-test/` exists for that.
 
 ### Restarting the longevity experiments
 
