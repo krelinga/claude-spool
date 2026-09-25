@@ -11,6 +11,7 @@ Nothing here is built yet.
 |---|---|
 | `drafts/` | Actions for the [Drafts](https://getdrafts.com) iOS app: send the current draft to a queue. |
 | `web-login/` | A one-page wrapper for the re-login flow, so an expiry can be cleared from a browser. |
+| `ui/` | A Vue status console: monitor jobs, reply to `needs_input`, retry, re-login. Designed in [`ui/DESIGN.md`](ui/DESIGN.md), which proposes folding `web-login/` into it. |
 
 ## Reaching the API
 
