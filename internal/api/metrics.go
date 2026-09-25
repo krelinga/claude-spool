@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/krelinga/claude-spool-be/internal/auth"
 
 	"github.com/krelinga/claude-spool-be/internal/store"
 )
@@ -112,10 +115,52 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	_, _, running := s.exec.Running()
 	sample("spool_executor_running", nil, boolGauge(running))
 
-	// The auth metrics the design wants (spool_auth_state, session age,
-	// relogins) belong to the auth manager, §7 step 3. Until then the auth
-	// state is only ever inferred from the executor being blocked, so emitting
-	// a half-truth here would be worse than emitting nothing.
+	// --- auth (§4) ---
+	if s.auth != nil {
+		st := s.auth.Status(ctx)
+		metric("spool_auth_state", "1 for the current credential state.", "gauge")
+		for _, v := range []auth.State{auth.StateOK, auth.StateExpired, auth.StateUnknown} {
+			sample("spool_auth_state", map[string]string{"state": string(v)}, boolGauge(st.State == v))
+		}
+		if st.SessionAgeSec != nil {
+			metric("spool_auth_session_age_seconds",
+				"Age of the current login session, since the last completed login.", "gauge")
+			sample("spool_auth_session_age_seconds", nil, fmt.Sprintf("%.0f", *st.SessionAgeSec))
+		}
+		metric("spool_auth_relogins_total", "Completed interactive logins.", "counter")
+		sample("spool_auth_relogins_total", nil, st.Relogins)
+		metric("spool_auth_login_in_progress", "1 while an interactive login awaits its code.", "gauge")
+		sample("spool_auth_login_in_progress", nil, boolGauge(st.LoginInProgress))
+
+		// The observed session lifetimes, which is the measurement the
+		// credential-mode decision rests on (§3.2). Exposed as a real histogram
+		// so Grafana can chart the distribution rather than a single number.
+		if lifetimes, err := s.st.SessionLifetimes(ctx); err == nil {
+			metric("spool_auth_session_lifetime_seconds",
+				"Observed lifetime of each login session, from login to expiry.", "histogram")
+			buckets := []float64{3600, 6 * 3600, 24 * 3600, 3 * 24 * 3600,
+				7 * 24 * 3600, 14 * 24 * 3600, 30 * 24 * 3600}
+			var sum float64
+			counts := make([]int, len(buckets))
+			for _, d := range lifetimes {
+				secs := d.Seconds()
+				sum += secs
+				for i, b := range buckets {
+					if secs <= b {
+						counts[i]++
+					}
+				}
+			}
+			for i, b := range buckets {
+				sample("spool_auth_session_lifetime_seconds_bucket",
+					map[string]string{"le": strconv.FormatFloat(b, 'f', -1, 64)}, counts[i])
+			}
+			sample("spool_auth_session_lifetime_seconds_bucket",
+				map[string]string{"le": "+Inf"}, len(lifetimes))
+			sample("spool_auth_session_lifetime_seconds_sum", nil, fmt.Sprintf("%.0f", sum))
+			sample("spool_auth_session_lifetime_seconds_count", nil, len(lifetimes))
+		}
+	}
 
 	outbox, err := s.st.OutboxCounts(ctx)
 	if err != nil {

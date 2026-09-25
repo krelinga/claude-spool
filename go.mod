@@ -5,6 +5,7 @@ go 1.27.1
 require gopkg.in/yaml.v3 v3.0.1
 
 require (
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect

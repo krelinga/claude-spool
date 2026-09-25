@@ -44,6 +44,14 @@ var (
 	}
 )
 
+// LooksLikeAuthFailure reports whether output indicates an expired or absent
+// login. Exported so the auth manager classifies a keep-alive the same way the
+// job classifier does — one set of patterns, one place to widen them.
+func LooksLikeAuthFailure(s string) bool { return matchAny(authPatterns, s) }
+
+// LooksLikeUsageLimit reports whether output indicates a usage or rate limit.
+func LooksLikeUsageLimit(s string) bool { return matchAny(usagePatterns, s) }
+
 func matchAny(res []*regexp.Regexp, s string) bool {
 	for _, re := range res {
 		if re.MatchString(s) {

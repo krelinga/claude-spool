@@ -81,6 +81,13 @@ type ClaudeConfig struct {
 	// SyncSkills sets CLAUDE_CODE_SYNC_SKILLS=1. Meaningless under
 	// long_lived_token, where skills are vendored instead.
 	SyncSkills bool `yaml:"sync_skills"`
+	// KeepaliveInterval is how often to make a minimal real request when no job
+	// has run, keeping the access token refreshing well inside its window so an
+	// idle weekend does not let the session go stale (§3.2). Zero disables it.
+	KeepaliveInterval Duration `yaml:"keepalive_interval"`
+	// LoginAttemptTTL bounds how long an unfinished re-login may hold the
+	// claude lock waiting for its code.
+	LoginAttemptTTL Duration `yaml:"login_attempt_ttl"`
 }
 
 // TokenConfig is a named bearer token, optionally scoped to a set of queues.
@@ -146,6 +153,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Claude.CredentialMode == ModeLogin {
 		c.Claude.SyncSkills = true
+		if c.Claude.KeepaliveInterval == 0 {
+			c.Claude.KeepaliveInterval = Duration(4 * time.Hour)
+		}
+	}
+	if c.Claude.LoginAttemptTTL == 0 {
+		c.Claude.LoginAttemptTTL = Duration(10 * time.Minute)
 	}
 	if c.WebhookRetryWindow == 0 {
 		c.WebhookRetryWindow = Duration(24 * time.Hour)
@@ -232,6 +245,14 @@ func (c *Config) validate() error {
 	}
 	if c.WebhookRetryWindow <= 0 {
 		return fmt.Errorf("webhook_retry_window must be positive")
+	}
+	// A keep-alive slower than the ~8h access-token window defeats its own
+	// purpose; the design calls for 4h.
+	if iv := c.Claude.KeepaliveInterval.Duration(); iv != 0 && iv > 8*time.Hour {
+		return fmt.Errorf("keepalive_interval %s is longer than the access token window; use 4h or less", iv)
+	}
+	if c.Claude.LoginAttemptTTL <= 0 {
+		return fmt.Errorf("login_attempt_ttl must be positive")
 	}
 	return nil
 }

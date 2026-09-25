@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/krelinga/claude-spool-be/internal/claudecli"
 	"github.com/krelinga/claude-spool-be/internal/event"
 
 	"github.com/krelinga/claude-spool-be/internal/config"
@@ -37,12 +38,24 @@ const (
 	maxCapabilityRetries = 3
 )
 
+// AuthObserver is told about outcomes that bear on the credential. The auth
+// manager implements it, so the executor does not duplicate the state machine:
+// one place decides what an auth failure means and fires one auth.required per
+// incident (§3.2).
+type AuthObserver interface {
+	NoteJobRan(at time.Time)
+	ObserveAuthFailure(ctx context.Context, detail string)
+}
+
 type Executor struct {
 	cfg    *config.Config
 	st     *store.Store
 	log    *slog.Logger
 	queues func() *config.QueueSet
 	notify *event.Notifier
+	// lock serialises every claude subprocess in the process, jobs included.
+	lock *claudecli.Lock
+	auth AuthObserver
 	// wakeSender nudges the webhook sender once notifications are committed.
 	wakeSender func()
 	now        func() time.Time
@@ -72,6 +85,12 @@ func WithSenderWake(f func()) Option {
 	return func(e *Executor) { e.wakeSender = f }
 }
 
+// WithLock shares the process-wide claude lock. Without it the executor makes
+// its own, which is correct only when nothing else runs claude.
+func WithLock(l *claudecli.Lock) Option {
+	return func(e *Executor) { e.lock = l }
+}
+
 func New(cfg *config.Config, st *store.Store, queues func() *config.QueueSet, notify *event.Notifier, log *slog.Logger, opts ...Option) *Executor {
 	e := &Executor{
 		cfg: cfg, st: st, log: log, queues: queues, notify: notify,
@@ -82,8 +101,18 @@ func New(cfg *config.Config, st *store.Store, queues func() *config.QueueSet, no
 	for _, o := range opts {
 		o(e)
 	}
+	if e.lock == nil {
+		e.lock = claudecli.NewLock()
+	}
 	return e
 }
+
+// SetAuthObserver registers the auth manager. It is set after construction
+// because the manager needs the executor's Wake to unblock queued work.
+func (e *Executor) SetAuthObserver(a AuthObserver) { e.auth = a }
+
+// Lock exposes the shared claude lock.
+func (e *Executor) Lock() *claudecli.Lock { return e.lock }
 
 // Wake nudges the loop after a submission or a resume. It never blocks.
 func (e *Executor) Wake() {

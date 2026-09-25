@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/krelinga/claude-spool-be/internal/auth"
 	"github.com/krelinga/claude-spool-be/internal/config"
 	"github.com/krelinga/claude-spool-be/internal/event"
 	"github.com/krelinga/claude-spool-be/internal/store"
@@ -69,6 +72,66 @@ type apiHarness struct {
 	cfg    *config.Config
 	exec   *fakeExec
 	broker *event.Broker
+	auth   *fakeAuth
+}
+
+// fakeAuth stands in for the auth manager: the real one spawns claude.
+type fakeAuth struct {
+	mu            sync.Mutex
+	status        auth.Status
+	keepaliveErr  error
+	keepaliveRuns int
+	startErr      error
+	submitErr     error
+	submitted     string
+	cancelled     string
+	attemptID     string
+}
+
+func (f *fakeAuth) Status(context.Context) auth.Status {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status
+}
+
+func (f *fakeAuth) Probe(ctx context.Context) (auth.Status, error) { return f.Status(ctx), nil }
+
+func (f *fakeAuth) Keepalive(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keepaliveRuns++
+	return f.keepaliveErr
+}
+
+func (f *fakeAuth) StartLogin(context.Context) (string, string, time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return "", "", time.Time{}, f.startErr
+	}
+	f.attemptID = "login_test"
+	return f.attemptID, "https://claude.com/cai/oauth/authorize?code=true&state=x",
+		time.Now().Add(10 * time.Minute), nil
+}
+
+func (f *fakeAuth) SubmitCode(ctx context.Context, id, code string) (auth.Status, error) {
+	f.mu.Lock()
+	if f.submitErr != nil {
+		err := f.submitErr
+		f.mu.Unlock()
+		return f.Status(ctx), err
+	}
+	f.submitted = code
+	f.status.State = auth.StateOK
+	f.mu.Unlock()
+	return f.Status(ctx), nil
+}
+
+func (f *fakeAuth) CancelLogin(ctx context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelled = id
+	return nil
 }
 
 func newAPI(t *testing.T) *apiHarness {
@@ -90,9 +153,11 @@ func newAPI(t *testing.T) *apiHarness {
 	ex := &fakeExec{}
 	broker := event.NewBroker()
 	notifier := event.NewNotifier(cfg, func() *config.QueueSet { return qs }, broker)
-	s := New(cfg, st, func() *config.QueueSet { return qs }, ex, notifier, broker,
+	fa := &fakeAuth{status: auth.Status{State: auth.StateOK, Account: "me@example.com",
+		Mode: config.ModeLogin, Relogins: 2}}
+	s := New(cfg, st, func() *config.QueueSet { return qs }, ex, fa, notifier, broker,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return &apiHarness{srv: s.Handler(), st: st, cfg: cfg, exec: ex, broker: broker}
+	return &apiHarness{srv: s.Handler(), st: st, cfg: cfg, exec: ex, broker: broker, auth: fa}
 }
 
 func (h *apiHarness) do(t *testing.T, method, path, token string, body any, headers ...[2]string) *httptest.ResponseRecorder {
@@ -678,12 +743,24 @@ func TestMetrics(t *testing.T) {
 		}
 	}
 	// Every metric must be preceded by HELP and TYPE, or Prometheus complains.
+	// Histogram series are the exception: _bucket, _sum and _count share the
+	// base name's TYPE declaration and must not carry their own.
 	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "spool_") {
-			name := strings.FieldsFunc(line, func(r rune) bool { return r == '{' || r == ' ' })[0]
-			if !strings.Contains(body, "# TYPE "+name+" ") {
-				t.Errorf("metric %s has no TYPE line", name)
+		if !strings.HasPrefix(line, "spool_") {
+			continue
+		}
+		name := strings.FieldsFunc(line, func(r rune) bool { return r == '{' || r == ' ' })[0]
+		base := name
+		for _, suffix := range []string{"_bucket", "_sum", "_count"} {
+			if trimmed, ok := strings.CutSuffix(name, suffix); ok {
+				if strings.Contains(body, "# TYPE "+trimmed+" histogram") {
+					base = trimmed
+				}
+				break
 			}
+		}
+		if !strings.Contains(body, "# TYPE "+base+" ") {
+			t.Errorf("metric %s has no TYPE line", name)
 		}
 	}
 }
@@ -704,3 +781,182 @@ func TestMetricsReflectsBlockedExecutor(t *testing.T) {
 		t.Error("ready should be 0 while blocked")
 	}
 }
+
+// --- auth endpoints ---
+
+func TestGetAuth(t *testing.T) {
+	h := newAPI(t)
+	got := decode[auth.Status](t, h.do(t, "GET", "/v1/auth", adminToken, nil))
+	if got.State != auth.StateOK || got.Account != "me@example.com" {
+		t.Errorf("status = %+v", got)
+	}
+	if got.Mode != config.ModeLogin {
+		t.Errorf("Mode = %q", got.Mode)
+	}
+	if got.Relogins != 2 {
+		t.Errorf("Relogins = %d", got.Relogins)
+	}
+	// It needs a token like everything else under /v1.
+	if w := h.do(t, "GET", "/v1/auth", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated = %d", w.Code)
+	}
+}
+
+func TestAuthCheck(t *testing.T) {
+	h := newAPI(t)
+	if w := h.do(t, "POST", "/v1/auth/check", adminToken, nil); w.Code != http.StatusOK {
+		t.Fatalf("code = %d %s", w.Code, w.Body)
+	}
+	if h.auth.keepaliveRuns != 1 {
+		t.Errorf("keepalive ran %d times", h.auth.keepaliveRuns)
+	}
+
+	// A busy executor is a conflict, not a server error: the credential is fine.
+	h.auth.keepaliveErr = errors.New("claude is busy")
+	if w := h.do(t, "POST", "/v1/auth/check", adminToken, nil); w.Code != http.StatusConflict {
+		t.Errorf("busy = %d, want 409", w.Code)
+	}
+}
+
+func TestLoginFlowEndpoints(t *testing.T) {
+	h := newAPI(t)
+
+	w := h.do(t, "POST", "/v1/auth/login", adminToken, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("start = %d %s", w.Code, w.Body)
+	}
+	start := decode[loginStartResponse](t, w)
+	if start.AttemptID == "" || start.URL == "" {
+		t.Fatalf("response = %+v", start)
+	}
+	if !strings.HasPrefix(start.URL, "https://claude.com/cai/oauth/authorize?") {
+		t.Errorf("URL = %q", start.URL)
+	}
+	if !start.ExpiresAt.After(time.Now()) {
+		t.Errorf("ExpiresAt = %v", start.ExpiresAt)
+	}
+
+	got := decode[auth.Status](t, h.do(t, "POST", "/v1/auth/login/"+start.AttemptID,
+		adminToken, submitCodeRequest{Code: "the-code"}))
+	if got.State != auth.StateOK {
+		t.Errorf("State = %q", got.State)
+	}
+	if h.auth.submitted != "the-code" {
+		t.Errorf("submitted = %q", h.auth.submitted)
+	}
+}
+
+func TestLoginErrorMapping(t *testing.T) {
+	h := newAPI(t)
+
+	// Busy is a conflict, so a phone knows to retry rather than give up.
+	h.auth.startErr = auth.ErrLoginBusy
+	if w := h.do(t, "POST", "/v1/auth/login", adminToken, nil); w.Code != http.StatusConflict {
+		t.Errorf("busy start = %d, want 409", w.Code)
+	}
+	h.auth.startErr = nil
+
+	start := decode[loginStartResponse](t, h.do(t, "POST", "/v1/auth/login", adminToken, nil))
+
+	h.auth.submitErr = auth.ErrNoAttempt
+	if w := h.do(t, "POST", "/v1/auth/login/"+start.AttemptID, adminToken,
+		submitCodeRequest{Code: "x"}); w.Code != http.StatusNotFound {
+		t.Errorf("unknown attempt = %d, want 404", w.Code)
+	}
+
+	h.auth.submitErr = auth.ErrAttemptExpired
+	if w := h.do(t, "POST", "/v1/auth/login/"+start.AttemptID, adminToken,
+		submitCodeRequest{Code: "x"}); w.Code != http.StatusGone {
+		t.Errorf("expired attempt = %d, want 410", w.Code)
+	}
+
+	// A wrong code is the user's to fix: 400, not 500.
+	h.auth.submitErr = errors.New("login failed: Invalid authorization code.")
+	w := h.do(t, "POST", "/v1/auth/login/"+start.AttemptID, adminToken, submitCodeRequest{Code: "bad"})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("bad code = %d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Invalid authorization code") {
+		t.Errorf("the reason should reach the client: %s", w.Body)
+	}
+}
+
+func TestCancelLoginEndpoint(t *testing.T) {
+	h := newAPI(t)
+	start := decode[loginStartResponse](t, h.do(t, "POST", "/v1/auth/login", adminToken, nil))
+	if w := h.do(t, "DELETE", "/v1/auth/login/"+start.AttemptID, adminToken, nil); w.Code != http.StatusOK {
+		t.Errorf("cancel = %d %s", w.Code, w.Body)
+	}
+	if h.auth.cancelled != start.AttemptID {
+		t.Errorf("cancelled = %q", h.auth.cancelled)
+	}
+}
+
+func TestAuthEventsEndpoint(t *testing.T) {
+	h := newAPI(t)
+	ctx := t.Context()
+	base := time.Now().Add(-100 * time.Hour)
+	h.st.RecordAuthEvent(ctx, store.AuthLoginCompleted, "a", base)
+	h.st.RecordAuthEvent(ctx, store.AuthExpired, "a", base.Add(48*time.Hour))
+
+	body := decode[struct {
+		Events    []store.AuthEvent `json:"events"`
+		Lifetimes []float64         `json:"session_lifetimes_seconds"`
+		Note      string            `json:"note"`
+	}](t, h.do(t, "GET", "/v1/auth/events", adminToken, nil))
+
+	if len(body.Events) != 2 {
+		t.Errorf("events = %d", len(body.Events))
+	}
+	if len(body.Lifetimes) != 1 || body.Lifetimes[0] != (48*time.Hour).Seconds() {
+		t.Errorf("lifetimes = %v", body.Lifetimes)
+	}
+	if body.Note != "" {
+		t.Errorf("note should be absent once data exists: %q", body.Note)
+	}
+}
+
+// An empty result should explain itself rather than leaving a bare [].
+func TestAuthEventsEmptyExplainsItself(t *testing.T) {
+	h := newAPI(t)
+	body := decode[struct {
+		Note string `json:"note"`
+	}](t, h.do(t, "GET", "/v1/auth/events", adminToken, nil))
+	if body.Note == "" {
+		t.Error("expected a note explaining why there are no lifetimes yet")
+	}
+}
+
+func TestAuthMetrics(t *testing.T) {
+	h := newAPI(t)
+	ctx := t.Context()
+	base := time.Now().Add(-100 * time.Hour)
+	h.st.RecordAuthEvent(ctx, store.AuthLoginCompleted, "a", base)
+	h.st.RecordAuthEvent(ctx, store.AuthExpired, "a", base.Add(48*time.Hour))
+	h.auth.status.SessionAgeSec = ptr(3600.0)
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	h.srv.ServeHTTP(w, req)
+	body := w.Body.String()
+
+	for _, want := range []string{
+		`spool_auth_state{state="ok"} 1`,
+		`spool_auth_state{state="expired"} 0`,
+		"spool_auth_relogins_total 2",
+		"spool_auth_session_age_seconds 3600",
+		"# TYPE spool_auth_session_lifetime_seconds histogram",
+		`spool_auth_session_lifetime_seconds_bucket{le="259200"} 1`,
+		"spool_auth_session_lifetime_seconds_count 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+	// A 48h session must not land in the 24h bucket.
+	if !strings.Contains(body, `spool_auth_session_lifetime_seconds_bucket{le="86400"} 0`) {
+		t.Error("48h session was bucketed at or below 24h")
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

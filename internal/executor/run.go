@@ -57,7 +57,13 @@ func (e *Executor) runJob(ctx context.Context, job *store.Job) {
 	// Auth and usage failures are shared-state problems: they block every queue
 	// at once, and the job itself may be safe to retry (§3.3, §3.5).
 	if res.ErrorKind.Blocking() {
-		e.block(ctx, res.ErrorKind, res.ErrorMessage, cl.ResetAt, log)
+		if res.ErrorKind == store.ErrKindAuth && e.auth != nil {
+			// The auth manager owns the credential state machine, so it decides
+			// what this means and emits at most one auth.required per incident.
+			e.auth.ObserveAuthFailure(ctx, res.ErrorMessage)
+		} else {
+			e.block(ctx, res.ErrorKind, res.ErrorMessage, cl.ResetAt, log)
+		}
 		if res.ToolCalls == 0 {
 			if err := e.st.Requeue(ctx, job.ID); err == nil {
 				log.Info("requeued job that made no tool calls", "error_kind", res.ErrorKind)
@@ -280,6 +286,14 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 		SyncSkills:       e.cfg.Claude.SyncSkills,
 	}
 
+	// One claude process at a time across the whole service, keep-alive and
+	// re-login included (§3.2).
+	release, err := e.lock.Acquire(ctx, "job "+job.ID)
+	if err != nil {
+		return run, fmt.Errorf("waiting for the claude lock: %w", err)
+	}
+	defer release()
+
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	e.setCurrent(job, cancel)
@@ -348,6 +362,11 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 	}
 	waitErr := cmd.Wait()
 	close(exited)
+
+	// A real request just went out, so the keep-alive can skip its next turn.
+	if e.auth != nil {
+		e.auth.NoteJobRan(e.now())
+	}
 
 	run = claudecli.Run{
 		Collector: collector,

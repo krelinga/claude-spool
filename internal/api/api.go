@@ -31,6 +31,7 @@ type Server struct {
 	st     *store.Store
 	queues func() *config.QueueSet
 	exec   Executor
+	auth   AuthManager
 	notify *event.Notifier
 	broker *event.Broker
 	log    *slog.Logger
@@ -38,9 +39,9 @@ type Server struct {
 }
 
 func New(cfg *config.Config, st *store.Store, queues func() *config.QueueSet, exec Executor,
-	notify *event.Notifier, broker *event.Broker, log *slog.Logger) *Server {
+	authMgr AuthManager, notify *event.Notifier, broker *event.Broker, log *slog.Logger) *Server {
 	return &Server{
-		cfg: cfg, st: st, queues: queues, exec: exec,
+		cfg: cfg, st: st, queues: queues, exec: exec, auth: authMgr,
 		notify: notify, broker: broker, log: log, now: time.Now,
 	}
 }
@@ -69,6 +70,12 @@ func (s *Server) Handler() http.Handler {
 	v1.HandleFunc("GET /v1/executor", s.getExecutor)
 	v1.HandleFunc("POST /v1/executor/pause", s.pauseExecutor)
 	v1.HandleFunc("POST /v1/executor/resume", s.resumeExecutor)
+	v1.HandleFunc("GET /v1/auth", s.getAuth)
+	v1.HandleFunc("POST /v1/auth/check", s.checkAuth)
+	v1.HandleFunc("POST /v1/auth/login", s.startLogin)
+	v1.HandleFunc("POST /v1/auth/login/{attempt}", s.submitLoginCode)
+	v1.HandleFunc("DELETE /v1/auth/login/{attempt}", s.cancelLogin)
+	v1.HandleFunc("GET /v1/auth/events", s.listAuthEvents)
 	v1.HandleFunc("GET /v1/events", s.streamEvents)
 	v1.HandleFunc("GET /v1/metrics", s.metrics)
 

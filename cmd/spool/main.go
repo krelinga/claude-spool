@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/krelinga/claude-spool-be/internal/api"
+	"github.com/krelinga/claude-spool-be/internal/auth"
+	"github.com/krelinga/claude-spool-be/internal/claudecli"
 	"github.com/krelinga/claude-spool-be/internal/config"
 	"github.com/krelinga/claude-spool-be/internal/event"
 	"github.com/krelinga/claude-spool-be/internal/executor"
@@ -87,7 +89,16 @@ func run() error {
 	notifier := event.NewNotifier(cfg, queueSet, broker)
 	sender := webhook.New(cfg, st, log)
 
-	exec := executor.New(cfg, st, queueSet, notifier, log, executor.WithSenderWake(sender.Wake))
+	// One lock in front of every claude subprocess: jobs, the keep-alive, and
+	// the interactive re-login all hold it, so nothing races the refresh token
+	// (§3.2). This is why the executor is global in the first place.
+	lock := claudecli.NewLock()
+
+	exec := executor.New(cfg, st, queueSet, notifier, log,
+		executor.WithSenderWake(sender.Wake), executor.WithLock(lock))
+	authMgr := auth.New(cfg, st, lock, notifier, log,
+		auth.WithSenderWake(sender.Wake), auth.WithExecutorWake(exec.Wake))
+	exec.SetAuthObserver(authMgr)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -97,13 +108,13 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(cfg, st, queueSet, exec, notifier, broker, log).Handler(),
+		Handler:           api.New(cfg, st, queueSet, exec, authMgr, notifier, broker, log).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No write timeout: transcript reads stream, and a live tail will hold
 		// the connection open once SSE lands.
 	}
 
-	errs := make(chan error, 3)
+	errs := make(chan error, 4)
 	go func() {
 		log.Info("listening", "addr", cfg.Listen, "queues", queueSet().Names(),
 			"credential_mode", cfg.Claude.CredentialMode, "webhook_receivers", len(cfg.Webhooks))
@@ -119,6 +130,11 @@ func run() error {
 	go func() {
 		if err := sender.Run(ctx); err != nil {
 			errs <- fmt.Errorf("webhook sender: %w", err)
+		}
+	}()
+	go func() {
+		if err := authMgr.Run(ctx); err != nil {
+			errs <- fmt.Errorf("auth manager: %w", err)
 		}
 	}()
 
