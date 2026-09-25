@@ -57,3 +57,137 @@ macOS — the iOS side is Drafts actions, which are JSON and JavaScript.
 
 Changing features means editing `.devcontainer/devcontainer.json`;
 `devcontainer-lock.json` regenerates on rebuild and is not hand-edited.
+
+## State as of 2026-09-25, and what to do next
+
+Written as a handoff: the devcontainer this was built in is being deleted, so
+this section is the only surviving memory of it. Everything below was verified,
+not assumed.
+
+**Done.** Design doc §7 steps 2–5 — the whole API side. Config-defined queues,
+the scheduler, the single global executor, the two-layer classifier, SQLite,
+scoped bearer tokens, the container image, reporting (signed webhook outbox, SSE,
+metrics), the auth manager (keep-alive, expiry detection, PTY re-login, cadence
+history), and the ergonomics verbs (retry, reply via `--resume`, cancelling a
+running job, hot reload, retention pruning).
+
+**Proven against reality, not fakes.** Two real books were added to the live
+Notion Media database through a real claude.ai login, driven through Spool's own
+`/v1/auth/login` PTY flow. The §6 spike is fully answered against CLI **2.1.282**;
+read `backend/docs/design/spike.md` before trusting anything about CLI flags,
+output shapes, or cost.
+
+**Next, in the order that makes sense:**
+
+1. Finish the repo rename (below) — mechanical, do it first so nothing else is
+   written against the old path.
+2. Restart the longevity experiments (below). They measure the one thing still
+   unknown, and they only accumulate while running.
+3. Build the clients. `clients/README.md` has the plan. Worth deciding first
+   which queues you want on the phone: the `notion-media`, `notion-ideas` and
+   `notion-places` skills all exist on the account, but only `media` has a queue
+   in `deploy/spool/queues.yaml`.
+
+### Finishing the repo rename
+
+The repo is still `claude-spool-be` and the Go module is
+`github.com/krelinga/claude-spool-be/backend`. The plan is to become
+`claude-spool` and `github.com/krelinga/claude-spool/backend`. Nothing outside
+this repo imports the module, so this is purely mechanical.
+
+```sh
+# 1. Rename on GitHub: Settings → General → Repository name → claude-spool.
+#    GitHub redirects the old URL, so nothing breaks immediately.
+
+# 2. Point the local clone at the new name.
+git remote set-url origin git@github.com:krelinga/claude-spool.git
+git remote -v
+
+# 3. Rewrite the module path and every import that uses it.
+cd backend
+go mod edit -module github.com/krelinga/claude-spool/backend
+grep -rl 'claude-spool-be/backend' . | xargs sed -i 's|claude-spool-be/backend|claude-spool/backend|g'
+
+# 4. Verify. The suite is the check that the rewrite was complete.
+gofmt -l . && go build ./... && go vet ./... && go test ./...
+cd ..
+
+# 5. Fix the remaining prose references, which are in this file and
+#    backend/CLAUDE.md. There should be none left afterwards.
+git grep -n claude-spool-be
+
+# 6. Commit and push.
+git add -A && git commit -m "Rename module to claude-spool/backend" && git push
+```
+
+Two things that are *not* affected, and do not need touching: the `§3.2`-style
+section references throughout the code point at the design doc by section number,
+not by path; and the Docker build context is already `backend/`, independent of
+the repo name.
+
+One thing that *is*: the workspace directory becomes `/workspaces/claude-spool`,
+and the spike container binds host paths under it. Recreating the container
+(step 2 below) picks up the new paths — see the note in that section.
+
+### Restarting the longevity experiments
+
+Both were stopped before the devcontainer was deleted, and **both lost their
+state with it** — the Docker volumes `spool-spike-claude` and `spool-real-data`
+lived inside that container's Docker daemon, as did the captured spike output in
+`backend/spike/out/` (gitignored). Nothing important was lost: every *finding* is
+recorded in `backend/docs/design/spike.md`, and the time series had only 7 entries
+over ~2.5 hours. They start from zero.
+
+They answer §6 item 7, which is the last open question in the design and the
+input to the §8 decision about whether to stay on `claudeai_login` or move to the
+`long_lived_token` fallback. **They only accumulate while running, so restart them
+early.**
+
+```sh
+# Arm 1 — kept warm. Measures the real re-auth cadence, and captures the
+# genuine expiry and usage-limit error strings, which the classifier still
+# only guesses at (authPatterns / usagePatterns in
+# backend/internal/claudecli/classify.go).
+backend/spike/run.sh build          # pins CLI 2.1.282
+backend/spike/run.sh up
+backend/spike/run.sh login          # interactive: open the URL, paste the code
+backend/spike/run.sh keepalive      # 4h interval
+backend/spike/run.sh keepalive-status   # check on it occasionally
+
+# Arm 2 — never warmed, the control. Does idleness alone end a session?
+deploy/real-run/run.sh build
+deploy/real-run/run.sh up
+deploy/real-run/run.sh login        # interactive, through Spool's own API
+deploy/real-run/run.sh down         # stop it and leave the login idle
+# Then, after days or weeks, without starting anything:
+deploy/real-run/run.sh check-idle
+```
+
+If the idle login dies while the warmed one lives, the 4-hourly keep-alive is
+load-bearing and the design was right to insist on it. If both live, it is belt
+and braces and the interval could be relaxed. Either answer is worth having.
+
+Caveats worth knowing before restarting:
+
+- **The keep-alive does not survive a container restart.** It runs via
+  `docker exec`, so stopping the container kills it silently.
+  `backend/spike/run.sh keepalive-status` is the check, and `up` and `results`
+  both warn when a previously recorded run has died.
+- **Moving `backend/spike/` breaks a running container**, because the mounts are
+  absolute host paths. Recreate with `up` afterwards; the login is in a named
+  volume and survives, and the log file moves with the directory.
+- Each check costs one small Haiku request, so roughly six a day.
+- `deploy/real-run/.token` is generated on first `up` and is gitignored.
+
+### The thing most likely to surprise a future session
+
+Cost is dominated by **context, not work**. A job that called two Notion tools
+and produced 948 output tokens cost **$1.03**, because every claude.ai connector
+on the account offers its tools to every run — 202 of them, Adobe alone
+contributing 107. Denying the connectors a queue does not declare in `requires`
+brought the same job to **$0.43**. Both queue files already do this, and carry
+`max_budget_usd` as a guard.
+
+Keep those deny lists current: enabling a new connector on claude.ai silently
+costs every queue. And note that `--allowedTools` does **not** reduce the offered
+set — only `--disallowedTools` does, with wildcards on the server prefix.
