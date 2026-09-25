@@ -10,7 +10,7 @@ Section references like §3.2 throughout this file and the code point at it.
 
 §7 steps 2 and 4 are implemented: queues from YAML, submit/list/get/cancel, scheduler, executor, classifier, SQLite, bearer tokens, Dockerfile, and reporting (webhook outbox with HMAC + retry, SSE, metrics). Not yet built — auth manager (step 3), retry/reply and running-job cancel (step 5), `queues.yaml` hot reload, retention pruning.
 
-**The §6 spike is done** except the longevity run, which is now running in the `spool-spike` container (`spike/run.sh keepalive-status`). See `docs/design/spike.md` — it is results rather than questions. Everything is pinned to CLI **2.1.282**; re-run `spike/run.sh` after an upgrade.
+**The §6 spike is done** except the longevity run, which is now running in the `spool-spike` container (`backend/spike/run.sh keepalive-status`). See `docs/design/spike.md` — it is results rather than questions. Everything is pinned to CLI **2.1.282**; re-run `backend/spike/run.sh` after an upgrade.
 
 The design doc is the source of truth for behavior.
 

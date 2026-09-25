@@ -1,7 +1,7 @@
 #!/bin/bash
 # Host-side driver for the validation spike (design §6).
 #
-# Everything the spike learns lands in spike/out/ as raw CLI output. Nothing
+# Everything the spike learns lands in backend/spike/out/ as raw CLI output. Nothing
 # here is summarised or interpreted on the way out: the point is to see what
 # the CLI actually does.
 set -uo pipefail
@@ -14,7 +14,7 @@ out="$here/out"
 
 usage() {
   cat <<'USAGE'
-Usage: spike/run.sh <command>
+Usage: backend/spike/run.sh <command>
 
   build            Build the spike image (pins CLAUDE_CODE_VERSION, default latest)
   up               Start the container with a persistent /data/claude volume
@@ -41,7 +41,7 @@ keepalive_running() { docker exec "$name" sh -c 'ps ax | grep -q "[7]0-keepalive
 
 need_up() {
   if ! running; then
-    echo "Container '$name' is not running. Run: spike/run.sh up" >&2
+    echo "Container '$name' is not running. Run: backend/spike/run.sh up" >&2
     exit 1
   fi
 }
@@ -80,9 +80,9 @@ case "$cmd" in
     echo "Started. CLI version: $(docker exec "$name" claude --version 2>&1)"
     if [ -f "$out/70-keepalive/log.jsonl" ]; then
       echo "NOTE: a longevity run was recorded before, and does not survive a"
-      echo "      container restart. Restart it with: spike/run.sh keepalive"
+      echo "      container restart. Restart it with: backend/spike/run.sh keepalive"
     fi
-    echo "Next: spike/run.sh offline   (then: login)"
+    echo "Next: backend/spike/run.sh offline   (then: login)"
     ;;
   login)
     need_up
@@ -110,7 +110,7 @@ case "$cmd" in
     docker exec -it "$name" script -q -c "claude auth login" /out/04-login-pty/transcript.txt
     echo
     if [ -s "$out/04-login-pty/transcript.txt" ]; then
-      echo "Saved $(wc -c < "$out/04-login-pty/transcript.txt") bytes to spike/out/04-login-pty/transcript.txt"
+      echo "Saved $(wc -c < "$out/04-login-pty/transcript.txt") bytes to backend/spike/out/04-login-pty/transcript.txt"
     else
       echo "WARNING: the transcript is empty — nothing was captured." >&2
     fi
@@ -129,7 +129,7 @@ case "$cmd" in
   probe)
     need_up
     if ! docker exec "$name" claude auth status >/dev/null 2>&1; then
-      echo "Not logged in inside the container. Run: spike/run.sh login" >&2
+      echo "Not logged in inside the container. Run: backend/spike/run.sh login" >&2
       exit 1
     fi
     for p in 10-init 20-skills 30-structured-output 40-auth-status 50-auth-failure 60-permission-denial; do
@@ -138,7 +138,7 @@ case "$cmd" in
       docker exec "$name" bash "/probes/$p.sh" /out || echo "(probe $p exited non-zero; output kept)"
     done
     echo
-    echo "Captured under spike/out/. Hand that directory over for interpretation."
+    echo "Captured under backend/spike/out/. Hand that directory over for interpretation."
     ;;
   skill)
     need_up
@@ -159,7 +159,7 @@ case "$cmd" in
     # `exec -d` reports nothing about what happened, so check rather than claim.
     sleep 3
     if keepalive_running; then
-      echo "Longevity test started (interval ${2:-14400}s). Check: spike/run.sh keepalive-status"
+      echo "Longevity test started (interval ${2:-14400}s). Check: backend/spike/run.sh keepalive-status"
       echo "Leave it running for weeks; it also captures real failure shapes."
     else
       echo "Longevity test failed to start. Last output:" >&2
@@ -172,7 +172,7 @@ case "$cmd" in
     if keepalive_running; then
       echo "running"
     else
-      echo "NOT running (start it with: spike/run.sh keepalive)"
+      echo "NOT running (start it with: backend/spike/run.sh keepalive)"
     fi
     if [ -f "$out/70-keepalive/log.jsonl" ]; then
       echo "checks recorded: $(wc -l < "$out/70-keepalive/log.jsonl")"
@@ -195,7 +195,7 @@ case "$cmd" in
   results)
     if [ ! -d "$out" ]; then echo "Nothing captured yet."; exit 0; fi
     if [ -f "$out/70-keepalive/log.jsonl" ] && ! keepalive_running; then
-      echo "WARNING: the longevity test has stopped. Restart: spike/run.sh keepalive"
+      echo "WARNING: the longevity test has stopped. Restart: backend/spike/run.sh keepalive"
       echo
     fi
     find "$out" -name SUMMARY.txt | sort | while read -r f; do

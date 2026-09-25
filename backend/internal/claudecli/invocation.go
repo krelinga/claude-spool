@@ -59,7 +59,7 @@ type Invocation struct {
 
 // Args builds the command line.
 //
-// Verified against CLI 2.1.282 (spike/out/00-flags). Note that `claude --help`
+// Verified against CLI 2.1.282 (backend/spike/out/00-flags). Note that `claude --help`
 // does not list --max-turns or --append-system-prompt-file, but both are
 // accepted; the help output is an incomplete list, so test by invocation
 // rather than by grepping help.

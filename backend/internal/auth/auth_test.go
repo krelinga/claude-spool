@@ -584,7 +584,7 @@ func TestRunIsIdleUnderLongLivedToken(t *testing.T) {
 	}
 }
 
-// Captured verbatim from CLI 2.1.282 (spike/out/40-auth-status). The probe must
+// Captured verbatim from CLI 2.1.282 (backend/spike/out/40-auth-status). The probe must
 // parse the real thing, not just the fake's approximation.
 func TestParseRealAuthStatusOutput(t *testing.T) {
 	const loggedIn = `{

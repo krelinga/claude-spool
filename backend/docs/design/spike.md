@@ -1,7 +1,7 @@
 # Validation spike — results
 
 All of §6 has now been run against **CLI 2.1.282** with a real claude.ai login
-(Max subscription). Raw output is in `spike/out/` (gitignored); `spike/run.sh`
+(Max subscription). Raw output is in `backend/spike/out/` (gitignored); `backend/spike/run.sh`
 re-runs any of it.
 
 The spike changed the design in one important way and corrected four wrong
@@ -110,13 +110,13 @@ newly enabled connector is offered by default and silently costs every queue.
 
 - **§6 item 7 — re-auth cadence.** The longevity test is **now running** in the
   `spool-spike` container at the 4h interval, logging to
-  `spike/out/70-keepalive/log.jsonl` (one JSON line per check: `logged_in`,
+  `backend/spike/out/70-keepalive/log.jsonl` (one JSON line per check: `logged_in`,
   exit codes, latency, `terminal_reason`). It also saves the full stream of any
   failed check under `failures/`, which is the only way to capture a real
   expiry or usage-limit shape — `usagePatterns` and `usageResetRe` in
   `internal/claudecli/classify.go` are still guesses until one occurs.
 
-  It does not survive a container restart; `spike/run.sh keepalive-status`
+  It does not survive a container restart; `backend/spike/run.sh keepalive-status`
   reports whether it is alive.
 
   §6 item 7 also asks whether *idleness alone* ends a session. That experiment is
@@ -150,5 +150,5 @@ newly enabled connector is offered by default and silently costs every queue.
 - `DISABLE_AUTOUPDATER=1`. The classifier reads CLI output, so version drift
   must be deliberate — and every finding here is pinned to **2.1.282**.
 - `claude --help` is an **incomplete** flag list: `--max-turns` and
-  `--append-system-prompt-file` both work but are unlisted. `spike/probes/00-flags.sh`
+  `--append-system-prompt-file` both work but are unlisted. `backend/spike/probes/00-flags.sh`
   tests by invocation, with an unknown-flag control case.
