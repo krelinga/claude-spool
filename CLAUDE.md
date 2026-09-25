@@ -82,9 +82,11 @@ Each component is released independently with
 - **Tags are `<path>/vX.Y.Z`**, such as `backend/v0.2.0`. Go requires this form
   to resolve the `backend` module, which lives in a subdirectory.
 - **Merging a release PR is the release.** For `backend`, the same workflow
-  then pushes `ghcr.io/krelinga/claude-spool` tagged with the version, the
-  major.minor version, and `latest`, with the Claude Code CLI pinned to the
-  version the spike measured.
+  then pushes `ghcr.io/krelinga/claude-spool/backend` tagged with the version,
+  the major.minor version, and `latest`, with the Claude Code CLI pinned to the
+  version the spike measured. It is built for `linux/amd64` only; arm64 was
+  left out to keep release builds fast. Any other component that ships an
+  image should use `ghcr.io/krelinga/claude-spool/<component>`.
 - **`/v1` is the contract between components.** Clients call only `/v1`
   endpoints, so any client version works against any backend version as long
   as the backend never breaks `/v1`. That is what makes independent releases

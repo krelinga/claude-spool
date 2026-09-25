@@ -38,7 +38,6 @@ jobs:
         with:
           ref: ${{ needs.release-please.outputs.backend-tag }}
 
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -50,7 +49,8 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          # One image per component, under the repo: .../claude-spool/<component>.
+          images: ghcr.io/${{ github.repository }}/backend
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.backend-version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.backend-version }}
@@ -59,7 +59,10 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: backend
-          platforms: linux/amd64,linux/arm64
+          # amd64 only for now: an emulated arm64 build is slow, and nothing
+          # needs it yet. Add linux/arm64 here, and docker/setup-qemu-action
+          # above, when something does.
+          platforms: linux/amd64
           # No build-args: the Claude Code CLI version is pinned in the Dockerfile.
           push: true
           tags: ${{ steps.meta.outputs.tags }}
