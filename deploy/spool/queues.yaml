@@ -81,29 +81,118 @@ queues:
     notify: [job.failed, job.needs_input]
     retention: 180d
 
-  adhoc:
-    description: Run a free-form prompt
-    prompt: "{{input}}"
-    # Deliberately narrow: adhoc is "run whatever the prompt asks", so it gets
-    # no shell, no filesystem writes, and no connector access. Reachable only by
-    # a trusted token.
+  ideas:
+    description: Capture an idea in the Notion Ideas database
+    prompt: |
+      /anthropic-skills:notion-ideas {{input}}
+    system_prompt: |
+      Every job is an explicit request to save an idea, even if it is phrased as a
+      bare description. Include any link given.
+    requires:
+      skills: [notion-ideas]
+      connectors: [notion]
     tools: [Skill, WebSearch, WebFetch]
-    allowed_tools: [Skill, WebSearch, WebFetch]
+    allowed_tools:
+      - Skill
+      - WebSearch
+      - WebFetch
+      - mcp__claude_ai_Notion__notion-search
+      - mcp__claude_ai_Notion__notion-fetch
+      - mcp__claude_ai_Notion__notion-query-data-sources
+      - mcp__claude_ai_Notion__notion-create-pages
     disallowed_tools:
-      # Defence in depth: --tools already removes these, and a future edit that
-      # widens `tools` should not silently hand adhoc a shell.
-      - Bash
-      - Write
-      - Edit
-      - NotebookEdit
-      # No connectors at all, which is both a restriction and the cheap path.
-      - mcp__claude_ai_Notion__*
+      # The skill only ever adds a page; capturing an idea has no business
+      # editing existing ones, let alone restructuring the workspace.
+      - mcp__claude_ai_Notion__notion-update-page
+      - mcp__claude_ai_Notion__notion-move-pages
+      - mcp__claude_ai_Notion__notion-duplicate-page
+      - mcp__claude_ai_Notion__notion-create-database
+      - mcp__claude_ai_Notion__notion-update-data-source
+      - mcp__claude_ai_Notion__notion-spawn-session
+      # Connectors this queue does not need — see the cost note above.
       - mcp__claude_ai_Adobe_for_creativity__*
       - mcp__claude_ai_Todoist__*
       - mcp__claude_ai_Claude_Docs__*
-    max_turns: 20
+    args:
+      url:
+        type: string
+        format: uri
+        description: A link the idea came from, when the share sheet has one.
+    outcome_extension:
+      notion_url:
+        type: string
+        description: The page created.
+      idea_type:
+        enum: [Tool, Project idea, Gear, Technique, Inspiration, Reading, Model, Jig, Language, Social]
+    model: sonnet
+    max_turns: 30
+    # A guard, not a target: a correctly configured run of this queue costs cents.
     max_budget_usd: 0.50
     timeout: 10m
     weight: 1
-    notify: [job.succeeded, job.failed, job.needs_input]
-    retention: 30d
+    notify: [job.failed, job.needs_input]
+    retention: 180d
+
+  places:
+    description: Add a place, or log a visit, in the Notion Places database
+    prompt: |
+      /anthropic-skills:notion-places {{input}}
+    # The skill was written for the claude.ai app, and three of its assumptions
+    # do not hold unattended: it has no idea where "the user's own area" is, its
+    # places_search tool is a claude.ai app tool the CLI does not offer, and it
+    # asks before updating an existing entry, which would turn every repeat
+    # visit into a needs_input.
+    system_prompt: |
+      I live in Chicago. When no city or neighbourhood is given, assume Chicago.
+
+      If places_search is not available, find the place's name, address and a
+      Google Maps link with WebSearch and WebFetch instead. Set whatever Location
+      fields you can confirm and leave the rest blank rather than guessing.
+
+      If the place is already in the database and the message logs a visit,
+      update that page instead of asking: set Last visited, increment Visit
+      count, and add anyone newly named to Have been. If it is already there and
+      the message adds nothing new, change nothing and link the existing page.
+    requires:
+      skills: [notion-places]
+      connectors: [notion]
+    tools: [Skill, WebSearch, WebFetch]
+    allowed_tools:
+      - Skill
+      - WebSearch
+      - WebFetch
+      - mcp__claude_ai_Notion__notion-search
+      - mcp__claude_ai_Notion__notion-fetch
+      - mcp__claude_ai_Notion__notion-query-data-sources
+      - mcp__claude_ai_Notion__notion-create-pages
+      - mcp__claude_ai_Notion__notion-update-page
+    disallowed_tools:
+      # Logging a place has no business restructuring the workspace.
+      - mcp__claude_ai_Notion__notion-move-pages
+      - mcp__claude_ai_Notion__notion-duplicate-page
+      - mcp__claude_ai_Notion__notion-create-database
+      - mcp__claude_ai_Notion__notion-update-data-source
+      - mcp__claude_ai_Notion__notion-spawn-session
+      # Connectors this queue does not need — see the cost note above.
+      - mcp__claude_ai_Adobe_for_creativity__*
+      - mcp__claude_ai_Todoist__*
+      - mcp__claude_ai_Claude_Docs__*
+    args:
+      url:
+        type: string
+        format: uri
+        description: A link to the place, e.g. a Google Maps share.
+    outcome_extension:
+      notion_url:
+        type: string
+        description: The page created or updated.
+      action:
+        enum: [created, updated, unchanged]
+    model: sonnet
+    max_turns: 30
+    # A guard, not a target: a correctly configured run of this queue costs cents.
+    max_budget_usd: 0.50
+    timeout: 10m
+    weight: 1
+    notify: [job.failed, job.needs_input]
+    retention: 180d

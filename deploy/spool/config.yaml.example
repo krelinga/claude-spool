@@ -14,16 +14,17 @@ claude:
   default_model: sonnet
 
 tokens:
-  # Full access, including the adhoc queue.
+  # Full access to every queue, and the only token that can reach one added
+  # later without editing this file.
   - name: admin
     token_env: SPOOL_ADMIN_TOKEN
     queues: ["*"]
 
-  # The share-sheet token. Scoped, because adhoc is effectively
-  # "run anything the allowlist permits".
+  # The phone's token. Scoped, so a new queue — especially a free-form one —
+  # is not reachable from the phone until it is listed here on purpose.
   - name: ios-share
     token_env: SPOOL_IOS_TOKEN
-    queues: [media]
+    queues: [media, ideas, places]
 
 # Where Spool is reachable from outside. Used to build the re-login link in an
 # auth.required notification, so the phone can act on it.
