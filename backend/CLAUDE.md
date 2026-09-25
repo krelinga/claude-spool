@@ -8,7 +8,9 @@ Section references like §3.2 throughout this file and the code point at it.
 
 ## Status
 
-§7 steps 2 and 4 are implemented: queues from YAML, submit/list/get/cancel, scheduler, executor, classifier, SQLite, bearer tokens, Dockerfile, and reporting (webhook outbox with HMAC + retry, SSE, metrics). Not yet built — auth manager (step 3), retry/reply and running-job cancel (step 5), `queues.yaml` hot reload, retention pruning.
+§7 steps 2–5 are implemented, which is the whole API side: queues from YAML, submit/list/get/cancel, scheduler, executor, classifier, SQLite, bearer tokens, Dockerfile, the auth manager (keep-alive, expiry detection, PTY re-login, cadence history), reporting (webhook outbox with HMAC + retry, SSE, metrics), and the ergonomics verbs (retry, reply via `--resume`, cancelling a running job, `queues.yaml` hot reload, retention pruning). Step 6, the frontends, lives under `clients/`, not here.
+
+Releases publish `ghcr.io/krelinga/claude-spool/backend`; `deploy/spool/compose.yaml` runs it, and [`README.md`](README.md) covers deploying and operating it.
 
 **The §6 spike is done** except the longevity run, which is now running in the `spool-spike` container (`backend/spike/run.sh keepalive-status`). See `docs/design/spike.md` — it is results rather than questions. Everything is pinned to CLI **2.1.282**; re-run `backend/spike/run.sh` after an upgrade.
 
@@ -32,7 +34,7 @@ The module path is `github.com/krelinga/claude-spool/backend`.
 
 ## Layout
 
-`cmd/spool` wires it together. Under `backend/internal/`: `config` (both YAML files, the template renderer, the config hash), `store` (SQLite, job lifecycle, outbox), `sched` (weighted round-robin, pure), `claudecli` (**everything** touching the CLI's flags and output), `executor` (the single global runner), `event` (envelope, routing, SSE broker), `webhook` (outbox sender), `api` (HTTP). `backend/spike/` is the CLI-behaviour harness, not part of the build.
+`cmd/spool` wires it together. Under `backend/internal/`: `config` (both YAML files, the template renderer, the config hash), `store` (SQLite, job lifecycle, outbox), `sched` (weighted round-robin, pure), `claudecli` (**everything** touching the CLI's flags and output), `executor` (the single global runner, plus queue hot reload and retention pruning), `auth` (the auth manager and the PTY login flow), `event` (envelope, routing, SSE broker), `webhook` (outbox sender), `api` (HTTP). `backend/spike/` is the CLI-behaviour harness, not part of the build.
 
 Dependency direction is one-way: `config` and `store` are leaves; `claudecli` and `event` import both; `executor` imports those; `api` sees the executor only through a two-method interface.
 
@@ -54,14 +56,14 @@ Dependency direction is one-way: `config` and `store` are leaves; `claudecli` an
 
 The devcontainer (`.devcontainer/devcontainer.json`) provides:
 
-- **Go** (`ghcr.io/devcontainers/features/go:1`, currently `latest`) with `gopls`, `dlv`, `staticcheck`, and `golangci-lint`. Pin to a specific minor once `go.mod` exists so the container and CI agree.
+- **Go** (`ghcr.io/devcontainers/features/go:1`, still `latest`) with `gopls`, `dlv`, `staticcheck`, and `golangci-lint`. `go.mod` says 1.27; pin the feature to that minor so the container and CI agree.
 - **docker-in-docker** for building and running the Spool image (§3.8) and for the §6 spike, which needs a bare Debian container with a pinned CLI version.
 - **Node LTS**, required by the Claude Code feature — not by Spool itself.
 - **`sqlite3` CLI** via `postCreateCommand`, for inspecting `spool.db` and the `.backup` procedure (§4). It is a debugging tool, not a build dependency.
 
 Changing features means editing `devcontainer.json`; `devcontainer-lock.json` updates itself on rebuild and should not be hand-edited.
 
-**Go specifics:** `modernc.org/sqlite` with `CGO_ENABLED=0` for the static binary — don't reach for `mattn/go-sqlite3`. The store opens with `MaxOpenConns(1)`: single-user service, one job at a time, and it removes a class of SQLITE_BUSY races. The `claude auth login` flow will need a PTY (`creack/pty`) when the auth manager lands.
+**Go specifics:** `modernc.org/sqlite` with `CGO_ENABLED=0` for the static binary — don't reach for `mattn/go-sqlite3`. The store opens with `MaxOpenConns(1)`: single-user service, one job at a time, and it removes a class of SQLITE_BUSY races. The `claude auth login` flow runs under a PTY (`creack/pty`, in `internal/auth/login.go`).
 
 **Subprocess gotcha, learned the hard way:** `cmd.Wait()` closes `StdoutPipe`, so it must not be called until the stdout scanner has drained to EOF. Calling it concurrently truncates the stream and silently loses the `result` line the whole classifier depends on. `executor.execute` drains first, then waits, with signal escalation in a separate watcher.
 
