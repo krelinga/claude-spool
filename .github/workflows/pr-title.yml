@@ -1,0 +1,31 @@
+# PRs are squash-merged with the PR title as the commit message, so the title
+# is what release-please reads. Reject titles it would silently ignore.
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title is a conventional commit
+        env:
+          # Passed through the environment, never interpolated into the
+          # script, so a title cannot inject shell.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert'
+          if [[ "$TITLE" =~ ^($types)(\([a-z0-9._/-]+\))?!?:\ [^[:space:]] ]]; then
+            echo "ok: $TITLE"
+            exit 0
+          fi
+          {
+            echo "::error title=PR title is not a conventional commit::$TITLE"
+            echo 'Use "<type>[(scope)][!]: <description>", e.g. "feat: add places queue".'
+            echo "Types: ${types//|/, }. Only feat and fix cut a release; see CLAUDE.md."
+          } >&2
+          exit 1

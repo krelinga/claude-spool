@@ -50,12 +50,21 @@ Each component is released independently with
 `release-please-config.json` lists the components and
 `.release-please-manifest.json` holds their current versions.
 
-- **Commit messages must be conventional commits** for release-please to see
-  them: `feat:` bumps the minor version, `fix:` bumps the patch, and anything
-  else (`docs:`, `chore:`, `test:`) releases nothing. Before 1.0, a breaking
-  change (`feat!:`) bumps the minor version, not the major. Plain messages are
-  ignored. Scope is not what assigns a commit to a component; the paths it
-  touches are.
+- **The PR title is what release-please reads.** PRs are squash-merged, and the
+  squashed commit takes the PR title as its message, so the title must be a
+  conventional commit. Commits on the branch can say anything. The `pr-title`
+  workflow rejects a title that doesn't match. `feat:` bumps the minor version,
+  `fix:` bumps the patch, and other types (`docs:`, `chore:`, `test:`, `ci:`,
+  `refactor:`) release nothing. Before 1.0, a breaking change (`feat!:`) bumps
+  the minor version, not the major. The scope in `feat(scope):` doesn't decide
+  which component a change belongs to. The files the PR touches do.
+- **To fix a merged PR's changelog entry,** edit its description to hold the
+  replacement message, one per line, between `BEGIN_COMMIT_OVERRIDE` and
+  `END_COMMIT_OVERRIDE`. release-please uses that in place of the squashed
+  commit's message.
+- **Commits pushed straight to `main` skip all of this.** Each one is read on
+  its own, and a message without a conventional type is silently ignored. Use a
+  PR for anything that should appear in a release.
 - **Tags are `<path>/vX.Y.Z`**, such as `backend/v0.2.0`. Go requires this form
   to resolve the `backend` module, which lives in a subdirectory.
 - **Merging a release PR is the release.** For `backend`, the same workflow
