@@ -1,0 +1,70 @@
+# Runs the Spool backend. Everything it needs sits in this directory:
+#
+#   compose.yaml   this file
+#   config.yaml    copied from config.yaml.example; tokens come from the env
+#   queues.yaml    the queues, hot-reloaded on change
+#   .env           the secrets config.yaml names in token_env / secret_env
+#                  (gitignored; see backend/README.md for what goes in it)
+#
+# Start it with `docker compose up -d` from here, then log in once (README).
+
+name: spool
+
+services:
+  spool:
+    # The released image, with the CLI pinned to the version the spike
+    # measured. Pin the major.minor so an upgrade is a deliberate edit; set
+    # SPOOL_IMAGE to run a local build instead (`docker build -t spool:local
+    # backend`).
+    image: ${SPOOL_IMAGE:-ghcr.io/krelinga/claude-spool/backend:0.1}
+    restart: unless-stopped
+
+    # Loopback by default: the service is meant to sit behind Caddy on the
+    # same host, which terminates TLS for the LAN and the tailnet. Set
+    # SPOOL_BIND=0.0.0.0 only if the proxy lives elsewhere.
+    ports:
+      - "${SPOOL_BIND:-127.0.0.1}:${SPOOL_PORT:-8080}:8080"
+
+    volumes:
+      # The claude.ai login, spool.db, transcripts and per-job work dirs. The
+      # login is created inside the container and never copied in: a second
+      # holder of the same refresh token invalidates both (design §3.2).
+      - data:/data
+      # The directory rather than the two files: editors that save by
+      # replacing a file would leave a single-file mount pointing at the old
+      # inode, and hot reload of queues.yaml would silently stop.
+      - .:/etc/spool:ro
+
+    # Passed through whole, so whatever token_env / secret_env names
+    # config.yaml uses reach the container without being listed here twice.
+    # Every one it names must be non-empty or Spool exits at startup. Never
+    # put ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN
+    # in it: each outranks the claude.ai login, and Spool refuses to start in
+    # login mode if one is set.
+    env_file: .env
+
+    # The image has no curl; Node is there for the CLI and has fetch.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    # HTTP shutdown waits up to 10s for open SSE streams, which is Docker's
+    # whole default. A job still running at stop is not waited for: it is
+    # recovered as `interrupted` on the next start.
+    stop_grace_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  data:
