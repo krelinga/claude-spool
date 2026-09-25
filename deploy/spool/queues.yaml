@@ -1,20 +1,34 @@
-# Queue definitions. This file is the security policy: it holds the prompts and
-# the tool restrictions, so it belongs in git and is reviewed as a diff. The API
-# exposes it read-only (design §3.3).
+# Queue definitions. This file is the security policy and the cost policy: it
+# holds the prompts, the tool restrictions, and the budget caps, so it belongs in
+# git and is reviewed as a diff. The API exposes it read-only (design §3.3).
 #
-# Names here are the real ones captured by the spike against CLI 2.1.282, not
-# the design doc's placeholders:
+# Names here are the real ones the spike captured from CLI 2.1.282, not the
+# design doc's placeholders:
 #   - the Notion connector is "claude.ai Notion", contributing tools prefixed
 #     mcp__claude_ai_Notion__
 #   - claude.ai-synced skills are namespaced, e.g. anthropic-skills:notion-media
 #
-# On tool restriction, which is easy to get wrong:
+# Three tool lists, which are easy to confuse:
 #   tools:             the built-in tools the run may use AT ALL (--tools).
-#   allowed_tools:     pre-approval so a needed tool is not denied for want of
-#                      a human (--allowedTools). It does NOT restrict.
-#   disallowed_tools:  denied outright, and wins over allowed_tools.
-# Omitting `tools` leaves every built-in available — including Bash for
-# commands the CLI deems safe. Always set it for an unattended queue.
+#   allowed_tools:     pre-approval so a needed tool is not denied for want of a
+#                      human (--allowedTools). It does NOT restrict.
+#   disallowed_tools:  denied outright, and wins over allowed_tools. This is the
+#                      only way to restrict MCP tools, which --tools cannot.
+# Omitting `tools` leaves every built-in available — including Bash for commands
+# the CLI deems safe. Always set it for an unattended queue.
+#
+# On the connector wildcards below: this is cost control, measured rather than
+# assumed. Two identical jobs on this account, CLI 2.1.282, sonnet:
+#
+#   all connectors enabled:  202 MCP tools offered, 222,167 tokens of context
+#                            created on the first turn, $1.03 for one job
+#   only Notion kept:         29 MCP tools offered,  73,118 tokens, $0.43
+#
+# So denying the connectors a queue does not declare in `requires` cut the cost
+# by about 2.4x. The remainder is the skill's own content plus the Notion
+# schemas, which the job actually needs. Revisit this list whenever you enable or
+# disable a connector on claude.ai — a newly enabled one is offered by default
+# and silently costs every queue.
 
 queues:
   media:
@@ -33,8 +47,20 @@ queues:
       - WebFetch
       - mcp__claude_ai_Notion__notion-search
       - mcp__claude_ai_Notion__notion-fetch
+      - mcp__claude_ai_Notion__notion-query-data-sources
       - mcp__claude_ai_Notion__notion-create-pages
       - mcp__claude_ai_Notion__notion-update-page
+    disallowed_tools:
+      # Adding a media entry has no business restructuring the workspace.
+      - mcp__claude_ai_Notion__notion-move-pages
+      - mcp__claude_ai_Notion__notion-duplicate-page
+      - mcp__claude_ai_Notion__notion-create-database
+      - mcp__claude_ai_Notion__notion-update-data-source
+      - mcp__claude_ai_Notion__notion-spawn-session
+      # Connectors this queue does not need — see the cost note above.
+      - mcp__claude_ai_Adobe_for_creativity__*
+      - mcp__claude_ai_Todoist__*
+      - mcp__claude_ai_Claude_Docs__*
     args:
       url:
         type: string
@@ -48,6 +74,8 @@ queues:
         enum: [book, film, tv, game, album, podcast, comic, essay, ttrpg]
     model: sonnet
     max_turns: 30
+    # A guard, not a target: a correctly configured run of this queue costs cents.
+    max_budget_usd: 0.50
     timeout: 10m
     weight: 1
     notify: [job.failed, job.needs_input]
@@ -61,10 +89,20 @@ queues:
     # a trusted token.
     tools: [Skill, WebSearch, WebFetch]
     allowed_tools: [Skill, WebSearch, WebFetch]
-    # Defence in depth: --tools already removes these, and a future edit that
-    # widens `tools` should not silently hand adhoc a shell.
-    disallowed_tools: [Bash, Write, Edit, NotebookEdit]
+    disallowed_tools:
+      # Defence in depth: --tools already removes these, and a future edit that
+      # widens `tools` should not silently hand adhoc a shell.
+      - Bash
+      - Write
+      - Edit
+      - NotebookEdit
+      # No connectors at all, which is both a restriction and the cheap path.
+      - mcp__claude_ai_Notion__*
+      - mcp__claude_ai_Adobe_for_creativity__*
+      - mcp__claude_ai_Todoist__*
+      - mcp__claude_ai_Claude_Docs__*
     max_turns: 20
+    max_budget_usd: 0.50
     timeout: 10m
     weight: 1
     notify: [job.succeeded, job.failed, job.needs_input]

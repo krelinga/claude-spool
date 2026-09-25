@@ -721,3 +721,14 @@ func TestArgsIncludesToolRestrictions(t *testing.T) {
 		}
 	}
 }
+
+func TestArgsIncludesBudgetCap(t *testing.T) {
+	args := strings.Join(Invocation{Prompt: "x", MaxTurns: 30, MaxBudgetUSD: 0.25}.Args(), " ")
+	if !strings.Contains(args, "--max-budget-usd 0.25") {
+		t.Errorf("budget cap not passed: %s", args)
+	}
+	// Zero means unset, not "spend nothing".
+	if args := strings.Join(Invocation{Prompt: "x"}.Args(), " "); strings.Contains(args, "--max-budget-usd") {
+		t.Errorf("unexpected budget flag: %s", args)
+	}
+}

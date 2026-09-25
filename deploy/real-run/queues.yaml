@@ -38,6 +38,14 @@ queues:
     # Belt and braces. allowed_tools only pre-approves, so the safety here comes
     # from this list: every mutating Notion tool the spike observed, denied
     # outright. A deny beats an allow, so a mistake above cannot write.
+    # Cost control, measured rather than assumed. Two identical jobs on this
+    # account, CLI 2.1.282, sonnet: all connectors enabled offered 202 MCP tools
+    # and created 222,167 tokens of context on the first turn for $1.03, against
+    # 29 tools, 73,118 tokens and $0.43 with only Notion kept — about 2.4x. The
+    # remainder is the skill's own content plus the Notion schemas the job needs.
+    # Wildcards work on the server prefix. Revisit this whenever you enable or
+    # disable a connector on claude.ai: a new one is offered by default and
+    # silently costs every queue.
     disallowed_tools:
       - mcp__claude_ai_Notion__notion-create-pages
       - mcp__claude_ai_Notion__notion-update-page
@@ -55,6 +63,10 @@ queues:
       - mcp__claude_ai_Notion__notion-upload-skill
       - mcp__claude_ai_Notion__notion-spawn-session
       - mcp__claude_ai_Notion__notion-send-message-to-session
+      # Connectors this queue does not need (see the note above).
+      - mcp__claude_ai_Adobe_for_creativity__*
+      - mcp__claude_ai_Todoist__*
+      - mcp__claude_ai_Claude_Docs__*
     outcome_extension:
       notion_url:
         type: string
@@ -63,6 +75,8 @@ queues:
         enum: [book, film, tv, game, album, podcast, comic, essay, ttrpg]
     model: sonnet
     max_turns: 30
+    # A guard, not a target: a well-configured run of this queue costs cents.
+    max_budget_usd: 0.50
     timeout: 10m
     weight: 1
     notify: [job.succeeded, job.failed, job.needs_input]
@@ -94,6 +108,10 @@ queues:
       - mcp__claude_ai_Notion__notion-create-database
       - mcp__claude_ai_Notion__notion-update-data-source
       - mcp__claude_ai_Notion__notion-spawn-session
+      # Connectors this queue does not need (see the note above).
+      - mcp__claude_ai_Adobe_for_creativity__*
+      - mcp__claude_ai_Todoist__*
+      - mcp__claude_ai_Claude_Docs__*
     args:
       url:
         type: string
@@ -107,6 +125,8 @@ queues:
         enum: [book, film, tv, game, album, podcast, comic, essay, ttrpg]
     model: sonnet
     max_turns: 30
+    # A guard, not a target: a well-configured run of this queue costs cents.
+    max_budget_usd: 0.50
     timeout: 10m
     weight: 1
     notify: [job.succeeded, job.failed, job.needs_input]

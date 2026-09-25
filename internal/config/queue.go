@@ -85,10 +85,14 @@ type Queue struct {
 	Args             map[string]ArgSpec      `yaml:"args" json:"args,omitempty"`
 	Model            string                  `yaml:"model" json:"model,omitempty"`
 	MaxTurns         int                     `yaml:"max_turns" json:"max_turns"`
-	Timeout          Duration                `yaml:"timeout" json:"timeout"`
-	Weight           float64                 `yaml:"weight" json:"weight"`
-	Notify           []string                `yaml:"notify" json:"notify,omitempty"`
-	Retention        Duration                `yaml:"retention" json:"retention"`
+	// MaxBudgetUSD caps what one job may spend (--max-budget-usd). Worth
+	// setting: context, not work, dominates cost, so a queue that accidentally
+	// loads every connector's tools is expensive rather than slow.
+	MaxBudgetUSD float64  `yaml:"max_budget_usd" json:"max_budget_usd,omitempty"`
+	Timeout      Duration `yaml:"timeout" json:"timeout"`
+	Weight       float64  `yaml:"weight" json:"weight"`
+	Notify       []string `yaml:"notify" json:"notify,omitempty"`
+	Retention    Duration `yaml:"retention" json:"retention"`
 
 	// ConfigHash identifies the exact definition a job ran under, so history
 	// stays accurate after a template edit (§3.3). Derived, not configured.
@@ -190,6 +194,9 @@ func (q *Queue) validate() error {
 	}
 	if q.Weight <= 0 {
 		return fmt.Errorf("weight must be > 0")
+	}
+	if q.MaxBudgetUSD < 0 {
+		return fmt.Errorf("max_budget_usd must not be negative")
 	}
 	for name, spec := range q.Args {
 		if !validArgTypes[spec.Type] {

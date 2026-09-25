@@ -48,6 +48,7 @@ type Invocation struct {
 	DisallowedTools []string
 
 	MaxTurns      int
+	MaxBudgetUSD  float64
 	Model         string
 	ResumeSession string
 
@@ -89,6 +90,9 @@ func (inv Invocation) Args() []string {
 	}
 	if inv.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(inv.MaxTurns))
+	}
+	if inv.MaxBudgetUSD > 0 {
+		args = append(args, "--max-budget-usd", strconv.FormatFloat(inv.MaxBudgetUSD, 'f', -1, 64))
 	}
 	if inv.Model != "" {
 		args = append(args, "--model", inv.Model)

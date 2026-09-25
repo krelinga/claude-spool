@@ -76,6 +76,36 @@ the design insists on a real login: `user:sessions:claude_code`,
 `user:profile`, `org:create_api_key`. Connector and plugin access is part of
 this grant, and an API key or `setup-token` credential does not carry it.
 
+## Cost: measured, and mostly about connectors
+
+The first real jobs revealed something the design does not discuss. Cost is
+dominated by **context, not work**: a job that called two Notion tools and
+produced 948 output tokens created 231,747 tokens of cached context on its first
+turn and cost **$1.03**.
+
+The cause is that every claude.ai connector on the account offers its tools to
+every run — 202 MCP tools, of which Adobe alone contributed 107. Denying the
+connectors a queue does not declare in `requires` (wildcards work on the server
+prefix, e.g. `mcp__claude_ai_Adobe_for_creativity__*`) brought the same job to 29
+tools, 73,118 tokens and **$0.43**, about 2.4x cheaper.
+
+Two things worth knowing about how this was established, because a careless
+measurement gives a wildly wrong answer:
+
+- `--allowedTools` does **not** reduce the offered set, so it saves nothing. Only
+  `--disallowedTools` removes tools, and only wildcards make it practical.
+- Comparing a `--max-turns 1` run against a full job suggested a 23x saving. It
+  is 2.4x. The turn cap suppresses the skill's own content, which is a real and
+  irreducible part of the cost.
+
+The remaining $0.43 is the skill content plus the Notion schemas the job needs.
+Queues now also carry `max_budget_usd` as a guard, since a mistake here is
+expensive rather than slow.
+
+At "tens of jobs a day" (§4) this is the difference between roughly $10 and $30 a
+day of subscription usage, so it is worth keeping the deny lists current: a
+newly enabled connector is offered by default and silently costs every queue.
+
 ## Still open
 
 - **§6 item 7 — re-auth cadence.** The longevity test is **now running** in the

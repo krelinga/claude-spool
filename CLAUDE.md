@@ -36,6 +36,7 @@ Dependency direction is one-way: `config` and `store` are leaves; `claudecli` an
 - Connectors are named `claude.ai Notion` with tools prefixed `mcp__claude_ai_Notion__`; synced skills are namespaced `anthropic-skills:notion-media`. Capability matching tolerates both prefixes.
 - A connector can report `pending` at init and contribute **no tools**. That is a startup race, not a misconfiguration: it retries rather than auto-pausing the queue.
 - On the result line, `subtype` is unreliable (reads `success` on an auth failure); use `is_error`, `terminal_reason` and `errors[]`.
+- **Cost is context, not work.** Every claude.ai connector offers its tools to every run, so an unfiltered job cost $1.03 while calling two tools. Denying undeclared connectors by wildcard (`mcp__claude_ai_Adobe_for_creativity__*`) took the same job to $0.43. `--allowedTools` does not reduce the offered set — only `--disallowedTools` does. Keep the deny lists in `queues.yaml` current when connectors change.
 - `claude --help` is an incomplete flag list (`--max-turns`, `--append-system-prompt-file` are unlisted but work) — test by invocation.
 - `claude auth login` under a PTY prints the URL **twice** (an OSC 8 hyperlink plus visible text), prompts with **no trailing newline**, and reads the code **without echo**. `internal/claudecli/login.go` handles all three, tested against the real captured transcript.
 
