@@ -14,7 +14,8 @@ repo=$(cd "$here/../.." && pwd)
 name=${SPOOL_CONTAINER:-spool-live-test}
 volume=${SPOOL_VOLUME:-spool-live-test-data}
 image=spool:live-test
-version=${CLAUDE_CODE_VERSION:-2.1.282}
+# Empty means the Dockerfile's pin; set it only to try another CLI.
+version=${CLAUDE_CODE_VERSION:-}
 # Not 8080: that is deploy/real-run's, and the two can be up at once.
 port=${SPOOL_PORT:-8081}
 base="http://localhost:$port"
@@ -26,7 +27,7 @@ usage() {
   cat <<'USAGE'
 Usage: deploy/live-test/run.sh <command>
 
-  build                     Build the image (pinned CLAUDE_CODE_VERSION, default 2.1.282)
+  build                     Build the image (CLI pinned in backend/Dockerfile; override with CLAUDE_CODE_VERSION)
   up                        Generate queues and start on port 8081 with its own /data volume
   login                     Log in through Spool's own API (open the URL, paste the code)
   login-manual              Log in with `docker exec` instead
@@ -151,7 +152,7 @@ case "$cmd" in
   build)
     # Its own tag, so rebuilding for a test never changes the image the
     # longevity experiments' commands run.
-    docker build --build-arg "CLAUDE_CODE_VERSION=$version" -t "$image" "$repo/backend"
+    docker build ${version:+--build-arg "CLAUDE_CODE_VERSION=$version"} -t "$image" "$repo/backend"
     ;;
   up)
     load_token

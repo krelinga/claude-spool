@@ -9,10 +9,11 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/spool ./cmd/spool
 
 FROM debian:bookworm-slim
 
-# Pin the CLI. The result classifier and (later) the login parser both scrape
-# CLI output, so upgrades are deliberate — bump this and watch the auth
-# metrics afterwards (design §3.2).
-ARG CLAUDE_CODE_VERSION=latest
+# Pin the CLI. The result classifier and the login parser both scrape CLI
+# output, so upgrades are deliberate: re-run backend/spike against the new
+# version, bump this, and watch the auth metrics afterwards (design §3.2).
+# This is the only pin. Release builds and the deploy/ scripts inherit it.
+ARG CLAUDE_CODE_VERSION=2.1.282
 ARG NODE_MAJOR=22
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
