@@ -30,6 +30,8 @@ Usage: deploy/real-run/run.sh <command>
   transcript <id>   The raw stream-json the run produced
   watch             Live SSE event stream
   logs              Container logs
+  check-idle        Is the never-kept-warm login still alive? (§6 item 7)
+  forget-login      Delete the credential, keep the job history
   down              Stop and remove the container (login volume kept)
   clean             Remove the container AND the login volume
 
@@ -199,6 +201,33 @@ case "$cmd" in
     else
       docker logs "$name" 2>&1 | tail -50
     fi
+    ;;
+  check-idle)
+    # The idleness arm of §6 item 7. This login is never kept warm, while the
+    # spike container's is pinged every 4h. Running this after days or weeks
+    # answers whether idleness alone ends a session — which decides whether the
+    # keep-alive in the design is load-bearing or merely belt and braces.
+    #
+    # It needs no running container and starts nothing: one `auth status` and one
+    # minimal request against the volume.
+    echo "Last login recorded in this volume:"
+    docker run --rm -v spool-real-data:/data "$image" \
+      sh -c 'stat -c "  %y  %n" /data/claude/.credentials.json 2>/dev/null || echo "  (no credential present)"'
+    echo
+    echo "auth status (local check):"
+    docker run --rm -v spool-real-data:/data -e CLAUDE_CONFIG_DIR=/data/claude "$image" \
+      claude auth status 2>&1 | sed 's/^/  /'
+    echo
+    echo "A real request, which is the authoritative check:"
+    docker run --rm -v spool-real-data:/data -e CLAUDE_CONFIG_DIR=/data/claude \
+      -e DISABLE_AUTOUPDATER=1 "$image" \
+      claude -p "reply with the single word ok" --model haiku --max-turns 1 2>&1 | sed 's/^/  /'
+    ;;
+  forget-login)
+    # Removes the credential but keeps the job history and transcripts.
+    docker run --rm -v spool-real-data:/data "$image" \
+      sh -c 'rm -f /data/claude/.credentials.json' \
+      && echo "Credential removed. Job history and transcripts kept; log in again with 'up' then 'login'."
     ;;
   down)      docker rm -f "$name" >/dev/null 2>&1 && echo "Removed $name (login volume kept)." ;;
   clean)

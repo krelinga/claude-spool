@@ -118,6 +118,24 @@ newly enabled connector is offered by default and silently costs every queue.
 
   It does not survive a container restart; `spike/run.sh keepalive-status`
   reports whether it is alive.
+
+  §6 item 7 also asks whether *idleness alone* ends a session. That experiment is
+  now set up as a natural A/B, because two logins exist on this account:
+
+  | Login | Kept warm? |
+  |---|---|
+  | `spool-spike-claude` volume | Yes — pinged every 4h by the keepalive |
+  | `spool-real-data` volume | **No** — logged in 2026-09-25, then left idle |
+
+  `deploy/real-run/run.sh check-idle` tests the idle one without starting
+  anything: one `auth status`, then one real request, which is the authoritative
+  check. Run it after days or weeks. If the idle login dies while the warmed one
+  lives, the keep-alive is load-bearing; if both live, it is belt and braces and
+  the interval could be relaxed.
+
+  Keeping that volume means a live credential sits at rest in a Docker volume.
+  `run.sh forget-login` deletes just the credential and keeps the job history;
+  `run.sh clean` removes everything.
 - **Whether `/anthropic-skills:notion-media` does the right thing.** Expansion
   is proven with a harmless skill; the media skill itself was not invoked,
   deliberately, to avoid writing to a live Notion database. Worth one manual
