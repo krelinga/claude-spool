@@ -276,6 +276,11 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 		model = e.cfg.Claude.DefaultModel
 	}
 
+	budget := q.MaxBudgetUSD
+	if budget == 0 {
+		budget = e.cfg.Claude.DefaultMaxBudgetUSD
+	}
+
 	inv := claudecli.Invocation{
 		Binary:           e.cfg.Claude.Binary,
 		Prompt:           prompt,
@@ -287,7 +292,7 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 		AllowedTools:     q.AllowedTools,
 		DisallowedTools:  q.DisallowedTools,
 		MaxTurns:         q.MaxTurns,
-		MaxBudgetUSD:     q.MaxBudgetUSD,
+		MaxBudgetUSD:     budget,
 		Model:            model,
 		ResumeSession:    job.ResumeSession,
 		SyncSkills:       e.cfg.Claude.SyncSkills,

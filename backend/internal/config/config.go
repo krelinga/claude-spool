@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +79,10 @@ type ClaudeConfig struct {
 	ConfigDir      string         `yaml:"config_dir"`
 	CredentialMode CredentialMode `yaml:"credential_mode"`
 	DefaultModel   string         `yaml:"default_model"`
+	// DefaultMaxBudgetUSD caps what one job may spend when its queue sets no
+	// max_budget_usd of its own. SPOOL_MAX_BUDGET_USD overrides it, so the cap
+	// can be tuned per deployment without editing a file.
+	DefaultMaxBudgetUSD float64 `yaml:"default_max_budget_usd"`
 	// SyncSkills sets CLAUDE_CODE_SYNC_SKILLS=1. Meaningless under
 	// long_lived_token, where skills are vendored instead.
 	SyncSkills bool `yaml:"sync_skills"`
@@ -126,6 +131,9 @@ func Parse(b []byte) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c.applyDefaults()
+	if err := c.applyEnv(); err != nil {
+		return nil, err
+	}
 	if err := c.resolveTokens(); err != nil {
 		return nil, err
 	}
@@ -157,12 +165,32 @@ func (c *Config) applyDefaults() {
 			c.Claude.KeepaliveInterval = Duration(4 * time.Hour)
 		}
 	}
+	if c.Claude.DefaultMaxBudgetUSD == 0 {
+		// Measured, not guessed: a cold-cache job on a Notion queue costs
+		// $0.35-0.50, almost all of it context, so a lower cap fails normal jobs.
+		c.Claude.DefaultMaxBudgetUSD = 1.00
+	}
 	if c.Claude.LoginAttemptTTL == 0 {
 		c.Claude.LoginAttemptTTL = Duration(10 * time.Minute)
 	}
 	if c.WebhookRetryWindow == 0 {
 		c.WebhookRetryWindow = Duration(24 * time.Hour)
 	}
+}
+
+// MaxBudgetEnv overrides claude.default_max_budget_usd when set.
+const MaxBudgetEnv = "SPOOL_MAX_BUDGET_USD"
+
+// applyEnv applies environment overrides, which win over the file.
+func (c *Config) applyEnv() error {
+	if v := os.Getenv(MaxBudgetEnv); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("%s=%q: not a number", MaxBudgetEnv, v)
+		}
+		c.Claude.DefaultMaxBudgetUSD = f
+	}
+	return nil
 }
 
 func (c *Config) resolveTokens() error {
@@ -200,6 +228,9 @@ func (c *Config) resolveTokens() error {
 }
 
 func (c *Config) validate() error {
+	if c.Claude.DefaultMaxBudgetUSD <= 0 {
+		return fmt.Errorf("default max budget must be positive, got %v", c.Claude.DefaultMaxBudgetUSD)
+	}
 	switch c.Claude.CredentialMode {
 	case ModeLogin, ModeLongLivedToken:
 	default:

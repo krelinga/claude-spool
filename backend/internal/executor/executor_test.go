@@ -101,6 +101,7 @@ queues:
   adhoc:
     prompt: "{{input}}"
     allowed_tools: [Skill]
+    max_budget_usd: 0.25
     timeout: 5s
     weight: 1
 `
@@ -770,6 +771,25 @@ func TestToolRestrictionReachesTheCLI(t *testing.T) {
 	args := h.dumpFile(t, "args.txt")
 	if !strings.Contains(args, "--tools Skill") {
 		t.Errorf("--tools not passed: %s", args)
+	}
+}
+
+// A queue with no max_budget_usd falls back to the service-wide default, and
+// one with its own keeps it.
+func TestBudgetReachesTheCLI(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Claude.DefaultMaxBudgetUSD = 1
+
+	h.submit(t, "01A", "media", "Dune")
+	h.stepOnce(t)
+	if args := h.dumpFile(t, "args.txt"); !strings.Contains(args, "--max-budget-usd 1") {
+		t.Errorf("default budget not passed: %s", args)
+	}
+
+	h.submit(t, "01B", "adhoc", "hello")
+	h.stepOnce(t)
+	if args := h.dumpFile(t, "args.txt"); !strings.Contains(args, "--max-budget-usd 0.25") {
+		t.Errorf("queue's own budget not passed: %s", args)
 	}
 }
 
