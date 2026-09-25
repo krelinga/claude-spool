@@ -10,7 +10,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 name=${SPOOL_CONTAINER:-spool-real}
 image=spool:real
-version=${CLAUDE_CODE_VERSION:-2.1.282}
+# Empty means the Dockerfile's pin; set it only to try another CLI.
+version=${CLAUDE_CODE_VERSION:-}
 port=${SPOOL_PORT:-8080}
 base="http://localhost:$port"
 
@@ -18,7 +19,7 @@ usage() {
   cat <<'USAGE'
 Usage: deploy/real-run/run.sh <command>
 
-  build             Build the image (pinned CLAUDE_CODE_VERSION, default 2.1.282)
+  build             Build the image (CLI pinned in backend/Dockerfile; override with CLAUDE_CODE_VERSION)
   up                Start the container on port 8080 with its own /data volume
   login             Log in THROUGH SPOOL's own API (exercises the PTY flow)
   login-manual      Log in with `docker exec` instead (the documented fallback)
@@ -120,7 +121,7 @@ case "$cmd" in
   build)
     # The build context is backend/, not the repo root: the image needs only the
     # Go module, and a root context would pull in docs, deploy and the clients.
-    docker build --build-arg "CLAUDE_CODE_VERSION=$version" -t "$image" "$repo/backend"
+    docker build ${version:+--build-arg "CLAUDE_CODE_VERSION=$version"} -t "$image" "$repo/backend"
     ;;
   up)
     load_token

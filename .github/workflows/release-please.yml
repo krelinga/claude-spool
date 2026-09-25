@@ -60,9 +60,7 @@ jobs:
         with:
           context: backend
           platforms: linux/amd64,linux/arm64
-          # The CLI version the spike measured (backend/docs/design/spike.md).
-          # The classifier scrapes its output, so bump this deliberately.
-          build-args: CLAUDE_CODE_VERSION=2.1.282
+          # No build-args: the Claude Code CLI version is pinned in the Dockerfile.
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

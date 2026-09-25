@@ -42,6 +42,20 @@ about flags, output shapes, or cost.
 - **Reaching the API from a phone is Tailscale's job.** The service is
   LAN-only behind Caddy, so clients assume a tailnet rather than a public
   endpoint.
+- **The Claude Code CLI version is pinned in one place:** the
+  `CLAUDE_CODE_VERSION` default in `backend/Dockerfile`. Release builds and the
+  `deploy/` scripts inherit it, so don't add a second pin anywhere; override it
+  per build with the environment variable instead. The many other mentions of
+  the version, such as "verified on CLI 2.1.282" in code, tests, `queues.yaml`
+  and `spike.md`, are *provenance*. They record what was measured, not what is
+  installed. Don't bump them with a find-and-replace: each changes only once
+  the spike has re-measured that finding on the new version. `backend/spike/`
+  deliberately defaults to `latest`, because re-measuring is its job.
+- **To upgrade the CLI:** run the spike against the new version, update
+  `spike.md` and whichever provenance notes still hold, bump the Dockerfile
+  default, and then watch the auth metrics. The classifier and the login
+  parser both scrape CLI output, so an unmeasured upgrade can break them
+  silently.
 
 ## Releasing
 
@@ -144,7 +158,7 @@ early.**
 # genuine expiry and usage-limit error strings, which the classifier still
 # only guesses at (authPatterns / usagePatterns in
 # backend/internal/claudecli/classify.go).
-backend/spike/run.sh build          # pins CLI 2.1.282
+CLAUDE_CODE_VERSION=2.1.282 backend/spike/run.sh build   # match the backend's pin; the spike defaults to latest
 backend/spike/run.sh up
 backend/spike/run.sh login          # interactive: open the URL, paste the code
 backend/spike/run.sh keepalive      # 4h interval
