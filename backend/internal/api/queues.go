@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/store"
 )
 
 // queueView is the safe subset of a queue definition (§3.7). Prompts, system

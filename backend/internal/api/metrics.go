@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/auth"
+	"github.com/krelinga/claude-spool/backend/internal/auth"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/store"
 )
 
 // metrics renders the Prometheus text exposition format by hand.

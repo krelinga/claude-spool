@@ -1,4 +1,4 @@
-module github.com/krelinga/claude-spool-be/backend
+module github.com/krelinga/claude-spool/backend
 
 go 1.27.1
 

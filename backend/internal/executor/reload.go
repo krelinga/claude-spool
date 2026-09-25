@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/store"
 )
 
 // Reloader watches queues.yaml and swaps the live definitions when it changes.

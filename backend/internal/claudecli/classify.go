@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/store"
 )
 
 // SPIKE (§6 item 6): these patterns are built from the documented and reported

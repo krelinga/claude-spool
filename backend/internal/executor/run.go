@@ -15,10 +15,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/claudecli"
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
-	"github.com/krelinga/claude-spool-be/backend/internal/event"
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/claudecli"
+	"github.com/krelinga/claude-spool/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/event"
+	"github.com/krelinga/claude-spool/backend/internal/store"
 )
 
 // runJob executes one job to completion and records its outcome.

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/krelinga/claude-spool-be/backend/internal/claudecli"
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/claudecli"
+	"github.com/krelinga/claude-spool/backend/internal/store"
 	"github.com/oklog/ulid/v2"
 )
 

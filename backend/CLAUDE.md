@@ -26,9 +26,7 @@ go vet ./... && gofmt -l .           # lint
 go run ./cmd/spool --config ../deploy/spool/config.yaml --queues ../deploy/spool/queues.yaml --check
 ```
 
-The module path is `github.com/krelinga/claude-spool-be/backend`. It will become
-`.../claude-spool/backend` when the repo is renamed; that is one scripted rewrite
-of the import paths, verified by the suite.
+The module path is `github.com/krelinga/claude-spool/backend`.
 
 `--check` validates both config files and exits — the fastest way to confirm a `queues.yaml` edit. YAML parsing uses `KnownFields(true)`, so an unknown field is an error rather than a silent no-op.
 

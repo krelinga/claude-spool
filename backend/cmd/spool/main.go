@@ -15,14 +15,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/api"
-	"github.com/krelinga/claude-spool-be/backend/internal/auth"
-	"github.com/krelinga/claude-spool-be/backend/internal/claudecli"
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
-	"github.com/krelinga/claude-spool-be/backend/internal/event"
-	"github.com/krelinga/claude-spool-be/backend/internal/executor"
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
-	"github.com/krelinga/claude-spool-be/backend/internal/webhook"
+	"github.com/krelinga/claude-spool/backend/internal/api"
+	"github.com/krelinga/claude-spool/backend/internal/auth"
+	"github.com/krelinga/claude-spool/backend/internal/claudecli"
+	"github.com/krelinga/claude-spool/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/event"
+	"github.com/krelinga/claude-spool/backend/internal/executor"
+	"github.com/krelinga/claude-spool/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/webhook"
 )
 
 func main() {

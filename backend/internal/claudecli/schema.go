@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/config"
 )
 
 // OutcomeStatus is the task-level verdict Claude reports (design §3.4 layer 2).

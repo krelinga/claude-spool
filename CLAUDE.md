@@ -79,55 +79,12 @@ output shapes, or cost.
 
 **Next, in the order that makes sense:**
 
-1. Finish the repo rename (below) — mechanical, do it first so nothing else is
-   written against the old path.
-2. Restart the longevity experiments (below). They measure the one thing still
+1. Restart the longevity experiments (below). They measure the one thing still
    unknown, and they only accumulate while running.
-3. Build the clients. `clients/README.md` has the plan. Worth deciding first
+2. Build the clients. `clients/README.md` has the plan. Worth deciding first
    which queues you want on the phone: the `notion-media`, `notion-ideas` and
    `notion-places` skills all exist on the account, but only `media` has a queue
    in `deploy/spool/queues.yaml`.
-
-### Finishing the repo rename
-
-The repo is still `claude-spool-be` and the Go module is
-`github.com/krelinga/claude-spool-be/backend`. The plan is to become
-`claude-spool` and `github.com/krelinga/claude-spool/backend`. Nothing outside
-this repo imports the module, so this is purely mechanical.
-
-```sh
-# 1. Rename on GitHub: Settings → General → Repository name → claude-spool.
-#    GitHub redirects the old URL, so nothing breaks immediately.
-
-# 2. Point the local clone at the new name.
-git remote set-url origin git@github.com:krelinga/claude-spool.git
-git remote -v
-
-# 3. Rewrite the module path and every import that uses it.
-cd backend
-go mod edit -module github.com/krelinga/claude-spool/backend
-grep -rl 'claude-spool-be/backend' . | xargs sed -i 's|claude-spool-be/backend|claude-spool/backend|g'
-
-# 4. Verify. The suite is the check that the rewrite was complete.
-gofmt -l . && go build ./... && go vet ./... && go test ./...
-cd ..
-
-# 5. Fix the remaining prose references, which are in this file and
-#    backend/CLAUDE.md. There should be none left afterwards.
-git grep -n claude-spool-be
-
-# 6. Commit and push.
-git add -A && git commit -m "Rename module to claude-spool/backend" && git push
-```
-
-Two things that are *not* affected, and do not need touching: the `§3.2`-style
-section references throughout the code point at the design doc by section number,
-not by path; and the Docker build context is already `backend/`, independent of
-the repo name.
-
-One thing that *is*: the workspace directory becomes `/workspaces/claude-spool`,
-and the spike container binds host paths under it. Recreating the container
-(step 2 below) picks up the new paths — see the note in that section.
 
 ### Restarting the longevity experiments
 

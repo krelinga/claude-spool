@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/store"
 	"github.com/oklog/ulid/v2"
 )
 

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/auth"
+	"github.com/krelinga/claude-spool/backend/internal/auth"
 )
 
 // AuthManager is the slice of the auth manager the API needs.

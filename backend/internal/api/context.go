@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/config"
 )
 
 func contextWithToken(ctx context.Context, tok *config.TokenConfig) context.Context {

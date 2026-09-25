@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/claudecli"
-	"github.com/krelinga/claude-spool-be/backend/internal/event"
+	"github.com/krelinga/claude-spool/backend/internal/claudecli"
+	"github.com/krelinga/claude-spool/backend/internal/event"
 
-	"github.com/krelinga/claude-spool-be/backend/internal/config"
-	"github.com/krelinga/claude-spool-be/backend/internal/sched"
-	"github.com/krelinga/claude-spool-be/backend/internal/store"
+	"github.com/krelinga/claude-spool/backend/internal/config"
+	"github.com/krelinga/claude-spool/backend/internal/sched"
+	"github.com/krelinga/claude-spool/backend/internal/store"
 )
 
 // Grace periods for stopping a run that has overrun its timeout (§3.4).
