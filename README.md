@@ -5,8 +5,16 @@ and runs multiple named queues on top of it: send a job, get an ID back
 immediately, and Spool runs it unattended with your claude.ai skills and
 connectors, reporting the outcome.
 
-Design: [`docs/design/spool-design-doc.md`](docs/design/spool-design-doc.md).
-Open questions: [`docs/design/spike.md`](docs/design/spike.md).
+A monorepo:
+
+| Path | What it is |
+|---|---|
+| [`backend/`](backend/) | The Go service. Complete; see [`backend/CLAUDE.md`](backend/CLAUDE.md). |
+| `clients/` | API consumers: Drafts actions, and a small re-login web page. |
+| [`deploy/`](deploy/) | `queues.yaml`, config examples, and the real-run driver. |
+
+Design: [`backend/docs/design/backend-design-doc.md`](backend/docs/design/backend-design-doc.md).
+What the CLI actually does: [`backend/docs/design/spike.md`](backend/docs/design/spike.md).
 
 ## Status
 
@@ -19,17 +27,20 @@ SSE event stream, and Prometheus metrics.
 Not yet implemented: the auth manager and phone re-login flow (§7 step 3), and
 retry/reply plus running-job cancel (§7 step 5).
 
-The validation spike **has been run** against CLI 2.1.282 (`docs/design/spike.md`).
+The validation spike **has been run** against CLI 2.1.282 (`backend/docs/design/spike.md`).
 It corrected several assumptions, including a security-relevant one: a queue's
 `allowed_tools` does not restrict anything on its own — `tools` does. Still
 unmeasured: the PTY login flow and the real re-auth cadence.
 
 ## Running it
 
+Go commands run from `backend/`, where `go.mod` lives.
+
 ```sh
 cp deploy/spool/config.yaml.example deploy/spool/config.yaml
 export SPOOL_ADMIN_TOKEN=... SPOOL_IOS_TOKEN=...
-go run ./cmd/spool --config deploy/spool/config.yaml --queues deploy/spool/queues.yaml --check
+cd backend && go run ./cmd/spool \
+  --config ../deploy/spool/config.yaml --queues ../deploy/spool/queues.yaml --check
 ```
 
 The container needs a login created **inside** it — never copy
@@ -37,7 +48,7 @@ The container needs a login created **inside** it — never copy
 same refresh token:
 
 ```sh
-docker build -t spool .
+docker build -t spool backend        # the build context is backend/, not the root
 docker run -d --name spool -v spool-data:/data -v "$PWD/deploy/spool:/etc/spool:ro" \
   -e SPOOL_ADMIN_TOKEN -e SPOOL_IOS_TOKEN -p 8080:8080 spool
 docker exec -it spool claude auth login

@@ -4,7 +4,7 @@
 // Every assumption about CLI surface lives in this package on purpose. The
 // flags and the stream-json shape are version-specific and several are still
 // unverified (design §6); when the spike answers them, this is the only place
-// that changes. See docs/design/spike.md for the open questions.
+// that changes. See backend/docs/design/spike.md for what is known.
 package claudecli
 
 import (
