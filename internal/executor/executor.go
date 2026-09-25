@@ -70,6 +70,9 @@ type runningJob struct {
 	id     string
 	queue  string
 	cancel context.CancelFunc
+	// cancelled distinguishes an operator stopping the job from a timeout, so
+	// the outcome reads cancelled rather than failed.
+	cancelled bool
 }
 
 type Option func(*Executor)
@@ -132,6 +135,27 @@ func (e *Executor) Running() (id, queue string, ok bool) {
 	return e.current.id, e.current.queue, true
 }
 
+// Cancel stops the named job if it is the one currently running, reporting
+// whether it took effect. The run's own finish path records the outcome, so a
+// cancelled job is never left marked running.
+func (e *Executor) Cancel(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.current == nil || e.current.id != id {
+		return false
+	}
+	e.current.cancelled = true
+	e.current.cancel()
+	return true
+}
+
+// wasCancelled reports whether the in-flight job was cancelled by an operator.
+func (e *Executor) wasCancelled(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.current != nil && e.current.id == id && e.current.cancelled
+}
+
 // Recover reconciles state left behind by a crash or restart. Jobs that were
 // running become interrupted and wait for a human: at-most-once means never
 // silently re-running work whose side effects may already have landed (§3.5).
@@ -167,6 +191,10 @@ func (e *Executor) Recover(ctx context.Context) error {
 	}
 	return nil
 }
+
+// NotifyJob is notifyJob for callers outside the package, used when a queue
+// disappearing fails jobs during a reload.
+func (e *Executor) NotifyJob(ctx context.Context, id string) { e.notifyJob(ctx, id) }
 
 // notifyJob emits the event for a job whose terminal state was written outside
 // the executor's own finish path (restart recovery, queue removal). It is a

@@ -106,6 +106,18 @@ func run() error {
 		return fmt.Errorf("recover state: %w", err)
 	}
 
+	// Leftover work directories from a crashed run must not be inherited: a
+	// fresh empty directory per job is an invariant (§3.1).
+	pruner := executor.NewPruner(cfg, st, queueSet, log)
+	pruner.SweepWorkDirs()
+
+	reloader := executor.NewReloader(*queuesPath, queueSet, current.Store, st, log)
+	reloader.OnQueueRemoved(func(queue string, jobs []string) {
+		for _, id := range jobs {
+			exec.NotifyJob(ctx, id)
+		}
+	})
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           api.New(cfg, st, queueSet, exec, authMgr, notifier, broker, log).Handler(),
@@ -114,7 +126,7 @@ func run() error {
 		// the connection open once SSE lands.
 	}
 
-	errs := make(chan error, 4)
+	errs := make(chan error, 6)
 	go func() {
 		log.Info("listening", "addr", cfg.Listen, "queues", queueSet().Names(),
 			"credential_mode", cfg.Claude.CredentialMode, "webhook_receivers", len(cfg.Webhooks))
@@ -135,6 +147,32 @@ func run() error {
 	go func() {
 		if err := authMgr.Run(ctx); err != nil {
 			errs <- fmt.Errorf("auth manager: %w", err)
+		}
+	}()
+	go func() {
+		if err := reloader.Run(ctx); err != nil {
+			errs <- fmt.Errorf("queue reloader: %w", err)
+		}
+	}()
+	go func() {
+		if err := pruner.Run(ctx); err != nil {
+			errs <- fmt.Errorf("pruner: %w", err)
+		}
+	}()
+
+	// SIGHUP reloads queues.yaml immediately, for an operator who does not want
+	// to wait for the poll.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				log.Info("SIGHUP received; reloading queues")
+				reloader.ReloadIfChanged(ctx)
+			}
 		}
 	}()
 

@@ -375,3 +375,94 @@ func (s *Store) Position(ctx context.Context, j *Job) (int, error) {
 		j.Queue, j.Priority, j.Priority, j.ID).Scan(&n)
 	return n, err
 }
+
+// Retryable reports whether a job may be retried.
+//
+// A succeeded job is deliberately excluded: retrying it would repeat side
+// effects that already landed, and at-most-once is the whole point (§3.5).
+// Queued and running jobs have nothing to retry yet.
+func Retryable(s JobStatus) bool {
+	switch s {
+	case StatusFailed, StatusNeedsInput, StatusCancelled, StatusInterrupted:
+		return true
+	}
+	return false
+}
+
+// NewChild builds the follow-up job that a retry or a reply creates. Neither
+// re-runs the original in place: history stays intact and the parent link
+// records why the child exists (§3.5).
+func NewChild(parent *Job, id string, now time.Time) *Job {
+	return &Job{
+		ID:              id,
+		Queue:           parent.Queue,
+		QueueConfigHash: parent.QueueConfigHash,
+		Status:          StatusQueued,
+		Priority:        parent.Priority,
+		Input:           parent.Input,
+		Args:            parent.Args,
+		Model:           parent.Model,
+		Labels:          parent.Labels,
+		ClientRef:       parent.ClientRef,
+		SubmittedBy:     parent.SubmittedBy,
+		ParentJobID:     parent.ID,
+		CreatedAt:       now.UTC(),
+	}
+}
+
+// Children lists the jobs created from a parent, oldest first.
+func (s *Store) Children(ctx context.Context, parentID string) ([]*Job, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+jobColumns+` FROM jobs WHERE parent_job_id = ? ORDER BY id`, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("list children of %s: %w", parentID, err)
+	}
+	defer rows.Close()
+	var out []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// CancelRunning marks a running job cancelled. The executor calls this after it
+// has actually stopped the subprocess.
+func (s *Store) CancelRunning(ctx context.Context, id string, now time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE id = ? AND status = 'running'`,
+		toMillis(now), id)
+	if err != nil {
+		return fmt.Errorf("cancel running %s: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// PrunableTranscripts lists jobs whose transcript has outlived its queue's
+// retention. Only the transcript is pruned: the job row is history and stays
+// (§3.6 prunes "transcripts ... according to each queue's retention").
+func (s *Store) PrunableTranscripts(ctx context.Context, queue string, before time.Time) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id FROM jobs
+		WHERE queue = ? AND finished_at IS NOT NULL AND finished_at < ?`,
+		queue, toMillis(before))
+	if err != nil {
+		return nil, fmt.Errorf("list prunable transcripts for %s: %w", queue, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

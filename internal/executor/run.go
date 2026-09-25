@@ -228,9 +228,15 @@ type logger interface {
 func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue, log logger) (claudecli.Run, error) {
 	var run claudecli.Run
 
-	// Trimmed because a YAML block scalar ("prompt: |") carries a trailing
-	// newline that would otherwise ride along into the prompt.
-	prompt := strings.TrimSpace(q.Render(q.Prompt, job.Input, job.Args))
+	// A reply resumes the parent's session, so its text *is* the prompt:
+	// re-rendering the queue template would restate the original request and
+	// make Claude start the task over instead of answering the question (§3.5).
+	prompt := job.Input
+	if job.ResumeSession == "" {
+		// Trimmed because a YAML block scalar ("prompt: |") carries a trailing
+		// newline that would otherwise ride along into the prompt.
+		prompt = strings.TrimSpace(q.Render(q.Prompt, job.Input, job.Args))
+	}
 	if err := e.st.SetRenderedPrompt(ctx, job.ID, prompt); err != nil {
 		return run, fmt.Errorf("record rendered prompt: %w", err)
 	}
@@ -370,6 +376,7 @@ func (e *Executor) execute(ctx context.Context, job *store.Job, q *config.Queue,
 
 	run = claudecli.Run{
 		Collector: collector,
+		Cancelled: e.wasCancelled(job.ID),
 		TimedOut:  timedOut.Load(),
 		Caps:      caps,
 		ExitErr:   waitErr,

@@ -772,3 +772,96 @@ func TestToolRestrictionReachesTheCLI(t *testing.T) {
 		t.Errorf("--tools not passed: %s", args)
 	}
 }
+
+// --- cancellation and replies ---
+
+// Cancelling a running job must stop the subprocess and record it as cancelled,
+// not as a timeout or a failure.
+func TestCancelRunningJobStopsIt(t *testing.T) {
+	h := newHarness(t)
+	h.submit(t, "01A", "media", "HANG")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.e.step(context.Background())
+	}()
+
+	// Wait until it is actually running before cancelling.
+	deadline := time.After(10 * time.Second)
+	for {
+		if id, _, ok := h.e.Running(); ok && id == "01A" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("job never started")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	start := time.Now()
+	if !h.e.Cancel("01A") {
+		t.Fatal("Cancel reported no effect on a running job")
+	}
+	<-done
+
+	// The queue timeout is 5s; a cancel must not wait for it.
+	if elapsed := time.Since(start); elapsed > 20*time.Second {
+		t.Errorf("cancel took %v", elapsed)
+	}
+	j := h.get(t, "01A")
+	if j.Status != store.StatusCancelled {
+		t.Fatalf("status = %v (%s), want cancelled", j.Status, j.ErrorMessage)
+	}
+	// A cancellation is not a failure, so it carries no error kind.
+	if j.ErrorKind != "" {
+		t.Errorf("ErrorKind = %q, want empty", j.ErrorKind)
+	}
+	if j.FinishedAt == nil {
+		t.Error("FinishedAt not set")
+	}
+}
+
+func TestCancelUnknownOrIdleJob(t *testing.T) {
+	h := newHarness(t)
+	if h.e.Cancel("01NOPE") {
+		t.Error("Cancel reported an effect with nothing running")
+	}
+	h.submit(t, "01A", "media", "Dune")
+	if h.e.Cancel("01A") {
+		t.Error("Cancel reported an effect on a merely queued job")
+	}
+}
+
+// A reply resumes the parent's session, so its text is the prompt and the
+// queue template is not re-applied.
+func TestReplyPassesResumeAndRawPrompt(t *testing.T) {
+	h := newHarness(t)
+	j := &store.Job{
+		ID: "01R", Queue: "media", QueueConfigHash: "h", Status: store.StatusQueued,
+		Input: "the 1965 first edition", ResumeSession: "sess-42",
+		SubmittedBy: "test", CreatedAt: time.Now().UTC(),
+	}
+	if _, created, err := h.st.Insert(context.Background(), j); err != nil || !created {
+		t.Fatal(err)
+	}
+	h.stepOnce(t)
+
+	got := h.get(t, "01R")
+	if got.Status != store.StatusSucceeded {
+		t.Fatalf("status = %v (%s)", got.Status, got.ErrorMessage)
+	}
+	// Not "/notion-media the 1965 first edition": the template would restate
+	// the original request.
+	if got.RenderedPrompt != "the 1965 first edition" {
+		t.Errorf("RenderedPrompt = %q, want the reply verbatim", got.RenderedPrompt)
+	}
+	args := h.dumpFile(t, "args.txt")
+	if !strings.Contains(args, "--resume sess-42") {
+		t.Errorf("--resume not passed: %s", args)
+	}
+	if got := h.dumpFile(t, "prompt.txt"); got != "the 1965 first edition" {
+		t.Errorf("claude received prompt %q", got)
+	}
+}

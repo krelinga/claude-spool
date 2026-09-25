@@ -256,6 +256,8 @@ func (c *Collector) hasToolsFrom(srv MCPServer) bool {
 // Run is everything the executor knows about a finished subprocess.
 type Run struct {
 	Collector *Collector
+	// Cancelled is set when an operator stopped the run.
+	Cancelled bool
 	// TimedOut is set when the executor killed the run on the queue's timeout.
 	TimedOut bool
 	// Caps is the capability check performed against the init event.
@@ -297,6 +299,14 @@ func Classify(r Run) Classification {
 		res.Status = store.StatusFailed
 		res.ErrorKind = kind
 		res.ErrorMessage = msg
+		return Classification{Result: res}
+	}
+
+	// An explicit cancellation outranks everything: the operator's intent is
+	// not a failure, and the run was stopped before it could finish.
+	if r.Cancelled {
+		res.Status = store.StatusCancelled
+		res.ErrorMessage = "cancelled while running"
 		return Classification{Result: res}
 	}
 

@@ -59,11 +59,19 @@ type fakeExec struct {
 	woken     int
 	running   [2]string
 	isRunning bool
+	// cancelOK is what Cancel reports; cancelled records what was asked for.
+	cancelOK  bool
+	cancelled string
 }
 
 func (f *fakeExec) Wake() { f.woken++ }
 func (f *fakeExec) Running() (string, string, bool) {
 	return f.running[0], f.running[1], f.isRunning
+}
+
+func (f *fakeExec) Cancel(id string) bool {
+	f.cancelled = id
+	return f.cancelOK
 }
 
 type apiHarness struct {
@@ -960,3 +968,209 @@ func TestAuthMetrics(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// --- retry, reply, cancelling a running job ---
+
+// A retry must create a child, never re-run the original in place (§3.5).
+func TestRetryCreatesChild(t *testing.T) {
+	h := newAPI(t)
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{
+			Input: "Dune", Labels: []string{"book"}, ClientRef: "share-1",
+		}))
+	// Drive it to a failed state.
+	h.st.Claim(t.Context(), "media", time.Now())
+	h.st.Finish(t.Context(), created.ID, store.Result{
+		Status: store.StatusFailed, ErrorKind: store.ErrKindCLI, ErrorMessage: "boom",
+	}, time.Now())
+
+	w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/retry", adminToken, nil)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("retry = %d %s", w.Code, w.Body)
+	}
+	child := decode[submitResponse](t, w)
+	if child.ID == created.ID {
+		t.Fatal("retry reused the original job id")
+	}
+
+	got, err := h.st.Get(t.Context(), child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParentJobID != created.ID {
+		t.Errorf("ParentJobID = %q", got.ParentJobID)
+	}
+	if got.Status != store.StatusQueued || got.Input != "Dune" {
+		t.Errorf("child = %+v", got)
+	}
+	// Submission metadata carries over, so history reads sensibly.
+	if got.ClientRef != "share-1" || len(got.Labels) != 1 {
+		t.Errorf("child lost its metadata: %+v", got)
+	}
+	// The original is untouched.
+	parent, _ := h.st.Get(t.Context(), created.ID)
+	if parent.Status != store.StatusFailed {
+		t.Errorf("parent status changed to %v", parent.Status)
+	}
+	// And the child is discoverable from the parent.
+	kids, _ := h.st.Children(t.Context(), created.ID)
+	if len(kids) != 1 || kids[0].ID != child.ID {
+		t.Errorf("Children = %v", kids)
+	}
+}
+
+// Retrying a job that succeeded would repeat side effects that already landed.
+func TestRetryRefusesSucceeded(t *testing.T) {
+	h := newAPI(t)
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{Input: "Dune"}))
+	h.st.Claim(t.Context(), "media", time.Now())
+	h.st.Finish(t.Context(), created.ID, store.Result{
+		Status: store.StatusSucceeded, Summary: "added"}, time.Now())
+
+	w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/retry", adminToken, nil)
+	if w.Code != http.StatusConflict {
+		t.Errorf("retry of a succeeded job = %d, want 409", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "repeat") {
+		t.Errorf("the reason should be explicit about side effects: %s", w.Body)
+	}
+}
+
+func TestRetryRefusesQueuedAndRunning(t *testing.T) {
+	h := newAPI(t)
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{Input: "Dune"}))
+	if w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/retry", adminToken, nil); w.Code != http.StatusConflict {
+		t.Errorf("retry of a queued job = %d, want 409", w.Code)
+	}
+	h.st.Claim(t.Context(), "media", time.Now())
+	if w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/retry", adminToken, nil); w.Code != http.StatusConflict {
+		t.Errorf("retry of a running job = %d, want 409", w.Code)
+	}
+}
+
+// A reply resumes the parent's session so Claude keeps its context.
+func TestReplyResumesSession(t *testing.T) {
+	h := newAPI(t)
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{
+			Input: "Dune", Args: map[string]any{"url": "https://example.com"}}))
+	h.st.Claim(t.Context(), "media", time.Now())
+	h.st.Finish(t.Context(), created.ID, store.Result{
+		Status: store.StatusNeedsInput, Summary: "Which edition?", SessionID: "sess-42",
+	}, time.Now())
+
+	w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/reply", adminToken,
+		replyRequest{Input: "the 1965 first edition"})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("reply = %d %s", w.Code, w.Body)
+	}
+	child := decode[submitResponse](t, w)
+	got, err := h.st.Get(t.Context(), child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResumeSession != "sess-42" {
+		t.Errorf("ResumeSession = %q, want the parent's session", got.ResumeSession)
+	}
+	// The reply is the prompt; re-sending the original args would restate the
+	// request instead of answering the question.
+	if got.Input != "the 1965 first edition" {
+		t.Errorf("Input = %q", got.Input)
+	}
+	if len(got.Args) != 0 {
+		t.Errorf("Args should not carry over into a reply: %v", got.Args)
+	}
+	if got.ParentJobID != created.ID {
+		t.Errorf("ParentJobID = %q", got.ParentJobID)
+	}
+}
+
+func TestReplyValidation(t *testing.T) {
+	h := newAPI(t)
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{Input: "Dune"}))
+
+	// Not needs_input yet.
+	if w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/reply", adminToken,
+		replyRequest{Input: "x"}); w.Code != http.StatusConflict {
+		t.Errorf("reply to a queued job = %d, want 409", w.Code)
+	}
+
+	h.st.Claim(t.Context(), "media", time.Now())
+	h.st.Finish(t.Context(), created.ID, store.Result{
+		Status: store.StatusNeedsInput, Summary: "Which edition?", SessionID: "sess-1"}, time.Now())
+
+	// Empty input.
+	if w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/reply", adminToken,
+		replyRequest{Input: "  "}); w.Code != http.StatusBadRequest {
+		t.Errorf("empty reply = %d, want 400", w.Code)
+	}
+
+	// A needs_input job with no session cannot be resumed, and must say so
+	// rather than silently restarting the task.
+	other := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{Input: "Other"}))
+	h.st.Claim(t.Context(), "media", time.Now())
+	h.st.Finish(t.Context(), other.ID, store.Result{
+		Status: store.StatusNeedsInput, Summary: "?"}, time.Now())
+	w := h.do(t, "POST", "/v1/jobs/"+other.ID+"/reply", adminToken, replyRequest{Input: "x"})
+	if w.Code != http.StatusConflict {
+		t.Errorf("reply without a session = %d, want 409", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "retry it instead") {
+		t.Errorf("the message should point somewhere useful: %s", w.Body)
+	}
+}
+
+func TestCancelRunningJob(t *testing.T) {
+	h := newAPI(t)
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{Input: "Dune"}))
+	h.st.Claim(t.Context(), "media", time.Now())
+
+	h.exec.cancelOK = true
+	w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/cancel", adminToken, nil)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("cancel running = %d %s, want 202", w.Code, w.Body)
+	}
+	if h.exec.cancelled != created.ID {
+		t.Errorf("executor asked to cancel %q", h.exec.cancelled)
+	}
+	// The API must not mark it cancelled itself: the executor owns the outcome.
+	got, _ := h.st.Get(t.Context(), created.ID)
+	if got.Status != store.StatusRunning {
+		t.Errorf("status = %v; the executor should record the outcome", got.Status)
+	}
+}
+
+// If it finished between the read and the cancel, say so rather than pretending.
+func TestCancelRunningRaceLost(t *testing.T) {
+	h := newAPI(t)
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/media/jobs", adminToken, submitRequest{Input: "Dune"}))
+	h.st.Claim(t.Context(), "media", time.Now())
+
+	h.exec.cancelOK = false
+	if w := h.do(t, "POST", "/v1/jobs/"+created.ID+"/cancel", adminToken, nil); w.Code != http.StatusConflict {
+		t.Errorf("code = %d, want 409", w.Code)
+	}
+}
+
+// Scoped tokens must not reach another queue's jobs through the new verbs.
+func TestRetryReplyRespectScope(t *testing.T) {
+	h := newAPI(t)
+	created := decode[submitResponse](t,
+		h.do(t, "POST", "/v1/queues/adhoc/jobs", adminToken, submitRequest{Input: "secret"}))
+	h.st.Claim(t.Context(), "adhoc", time.Now())
+	h.st.Finish(t.Context(), created.ID, store.Result{
+		Status: store.StatusNeedsInput, SessionID: "s1"}, time.Now())
+
+	for _, path := range []string{"/retry", "/reply"} {
+		w := h.do(t, "POST", "/v1/jobs/"+created.ID+path, scopedToken, replyRequest{Input: "x"})
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s with a scoped token = %d, want 404", path, w.Code)
+		}
+	}
+}

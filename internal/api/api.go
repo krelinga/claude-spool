@@ -24,6 +24,9 @@ import (
 type Executor interface {
 	Wake()
 	Running() (id, queue string, ok bool)
+	// Cancel stops the named job if it is the one currently running. It reports
+	// whether it took effect; the executor records the outcome itself.
+	Cancel(id string) bool
 }
 
 type Server struct {
@@ -67,6 +70,8 @@ func (s *Server) Handler() http.Handler {
 	v1.HandleFunc("GET /v1/jobs/{id}", s.getJob)
 	v1.HandleFunc("GET /v1/jobs/{id}/transcript", s.getTranscript)
 	v1.HandleFunc("POST /v1/jobs/{id}/cancel", s.cancelJob)
+	v1.HandleFunc("POST /v1/jobs/{id}/retry", s.retryJob)
+	v1.HandleFunc("POST /v1/jobs/{id}/reply", s.replyJob)
 	v1.HandleFunc("GET /v1/executor", s.getExecutor)
 	v1.HandleFunc("POST /v1/executor/pause", s.pauseExecutor)
 	v1.HandleFunc("POST /v1/executor/resume", s.resumeExecutor)
