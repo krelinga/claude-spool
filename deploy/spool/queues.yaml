@@ -153,6 +153,10 @@ queues:
       update that page instead of asking: set Last visited, increment Visit
       count, and add anyone newly named to Have been. If it is already there and
       the message adds nothing new, change nothing and link the existing page.
+
+      Write the page body only from what the message says. Do not add details
+      it does not give, such as which meal or occasion it was; the skill's
+      examples are illustrations, not facts about this visit.
     requires:
       skills: [notion-places]
       connectors: [notion]
