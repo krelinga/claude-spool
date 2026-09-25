@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 §7 steps 2 and 4 are implemented: queues from YAML, submit/list/get/cancel, scheduler, executor, classifier, SQLite, bearer tokens, Dockerfile, and reporting (webhook outbox with HMAC + retry, SSE, metrics). Not yet built — auth manager (step 3), retry/reply and running-job cancel (step 5), `queues.yaml` hot reload, retention pruning.
 
-**The §6 spike is done** except the PTY login flow and the longevity run — see `docs/design/spike.md`, which is now results rather than questions. Everything here is pinned to CLI **2.1.282**; re-run `spike/run.sh` after an upgrade.
+**The §6 spike is done** except the longevity run, which is now running in the `spool-spike` container (`spike/run.sh keepalive-status`). See `docs/design/spike.md` — it is results rather than questions. Everything is pinned to CLI **2.1.282**; re-run `spike/run.sh` after an upgrade.
 
 The design doc is the source of truth for behavior.
 
@@ -37,6 +37,7 @@ Dependency direction is one-way: `config` and `store` are leaves; `claudecli` an
 - A connector can report `pending` at init and contribute **no tools**. That is a startup race, not a misconfiguration: it retries rather than auto-pausing the queue.
 - On the result line, `subtype` is unreliable (reads `success` on an auth failure); use `is_error`, `terminal_reason` and `errors[]`.
 - `claude --help` is an incomplete flag list (`--max-turns`, `--append-system-prompt-file` are unlisted but work) — test by invocation.
+- `claude auth login` under a PTY prints the URL **twice** (an OSC 8 hyperlink plus visible text), prompts with **no trailing newline**, and reads the code **without echo**. `internal/claudecli/login.go` handles all three, tested against the real captured transcript.
 
 ## Toolchain
 

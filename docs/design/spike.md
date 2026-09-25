@@ -47,6 +47,7 @@ disallowed_tools: [Bash, Write, Edit]      # defence in depth; beats allowed_too
 | **2. Synced skills in `-p`?** | **Yes**, and they are **namespaced**: `anthropic-skills:notion-media`, not `notion-media`. They appear in both `slash_commands[]` and a `skills[]` array. |
 | **2b. Does `notion-media` exist?** | **Yes** — along with `notion-ideas` and `notion-places`. A namespaced slash command **expands at prompt level** and consumes no tool call, so `/anthropic-skills:notion-media {{input}}` works as a queue prompt. |
 | **3. `structured_output` on the result line?** | **Yes — that exact key.** The first guess was right. It also appears as JSON text in `result`, so the fenced-block fallback would work too. **It costs turns**: the observed run needed `num_turns: 4`, and a run capped at 1 turn produced `error_max_turns` with no outcome at all. Queues therefore enforce `max_turns >= 5`. |
+| **4. `claude auth login` under a PTY, no browser?** | **Yes.** It prints `Opening browser to sign in…`, then `If the browser didn't open, visit: <url>`, then the newline-free prompt `Paste code here if prompted > `, then `Login successful.` and exit 0. Three traps, all handled in `internal/claudecli/login.go`: the URL is emitted **twice** on one line (once inside an OSC 8 hyperlink escape, once as visible coloured text), the prompt has **no trailing newline** so a line-oriented reader hangs, and the code is read **without echo** so it never appears in the transcript — success can only be confirmed from the marker and exit status. |
 | **5. Is `auth status` machine-readable?** | **Yes**, JSON by default (a `--json` flag is accepted but unnecessary): `{loggedIn, authMethod: "claude.ai", apiProvider, email, orgId, orgName, subscriptionType}`. Exit **0** logged in, **1** logged out. It is **local-only** — 64 ms, far too fast for a round trip. **There is no expiry field**, so the keep-alive request remains the only authoritative liveness check, exactly as the design assumed. |
 | **6. Real failure shapes?** | Auth: a normal result line with `is_error: true`, `result: "Not logged in · Please run /login"`, `terminal_reason: "api_error"`, and — trap — `subtype: "success"`. Max turns: `subtype: "error_max_turns"`, `terminal_reason: "max_turns"`, `errors: ["Reached maximum number of turns (1)"]`, and **no `result` field at all**. Denials: `permission_denials: [{tool_name, tool_use_id, tool_input}]`. |
 
@@ -69,11 +70,14 @@ Two fields the design did not know about, now used by the classifier:
 | Connector presence judged by status alone | Status **and** at least one tool carrying the server's derived prefix, since that is what Claude can actually call. |
 | `max_turns >= 1` | `max_turns >= 5`, because structured output needs turns of its own. |
 
+The authorization URL's scopes are worth noting, because they corroborate why
+the design insists on a real login: `user:sessions:claude_code`,
+`user:mcp_servers`, `user:file_upload`, `user:plugins`, `user:inference`,
+`user:profile`, `org:create_api_key`. Connector and plugin access is part of
+this grant, and an API key or `setup-token` credential does not carry it.
+
 ## Still open
 
-- **§6 item 4 — `claude auth login` under a PTY.** Not captured; the login was
-  done interactively. `spike/run.sh capture-login` records it when needed. This
-  is the remaining unknown for the auth manager (§7 step 3).
 - **§6 item 7 — re-auth cadence.** The longevity test is **now running** in the
   `spool-spike` container at the 4h interval, logging to
   `spike/out/70-keepalive/log.jsonl` (one JSON line per check: `logged_in`,
