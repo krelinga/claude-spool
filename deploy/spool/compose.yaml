@@ -16,7 +16,7 @@ services:
     # measured. Pin the major.minor so an upgrade is a deliberate edit; set
     # SPOOL_IMAGE to run a local build instead (`docker build -t spool:local
     # backend`).
-    image: ${SPOOL_IMAGE:-ghcr.io/krelinga/claude-spool/backend:0.1}
+    image: ${SPOOL_IMAGE:-ghcr.io/krelinga/claude-spool/backend:0.2}
     restart: unless-stopped
 
     # Loopback by default: the service is meant to sit behind Caddy on the
