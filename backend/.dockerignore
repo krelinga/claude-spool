@@ -1,0 +1,5 @@
+# Relative to backend/, which is the build context.
+spike
+spool
+dist
+data

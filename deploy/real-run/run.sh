@@ -118,7 +118,9 @@ submit() {
 cmd=${1:-}
 case "$cmd" in
   build)
-    docker build --build-arg "CLAUDE_CODE_VERSION=$version" -t "$image" "$repo"
+    # The build context is backend/, not the repo root: the image needs only the
+    # Go module, and a root context would pull in docs, deploy and the clients.
+    docker build --build-arg "CLAUDE_CODE_VERSION=$version" -t "$image" "$repo/backend"
     ;;
   up)
     load_token
