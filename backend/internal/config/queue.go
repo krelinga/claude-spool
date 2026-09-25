@@ -85,9 +85,10 @@ type Queue struct {
 	Args             map[string]ArgSpec      `yaml:"args" json:"args,omitempty"`
 	Model            string                  `yaml:"model" json:"model,omitempty"`
 	MaxTurns         int                     `yaml:"max_turns" json:"max_turns"`
-	// MaxBudgetUSD caps what one job may spend (--max-budget-usd). Worth
-	// setting: context, not work, dominates cost, so a queue that accidentally
-	// loads every connector's tools is expensive rather than slow.
+	// MaxBudgetUSD caps what one job may spend (--max-budget-usd). Zero means
+	// claude.default_max_budget_usd. Context, not work, dominates cost, so a
+	// queue that accidentally loads every connector's tools is expensive rather
+	// than slow.
 	MaxBudgetUSD float64  `yaml:"max_budget_usd" json:"max_budget_usd,omitempty"`
 	Timeout      Duration `yaml:"timeout" json:"timeout"`
 	Weight       float64  `yaml:"weight" json:"weight"`

@@ -239,3 +239,40 @@ func TestTokenEnv(t *testing.T) {
 		t.Error("token_env secret not honoured")
 	}
 }
+
+func TestMaxBudgetDefaultAndEnv(t *testing.T) {
+	c, err := Parse([]byte(goodConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Claude.DefaultMaxBudgetUSD != 1.00 {
+		t.Errorf("default = %v, want 1.00", c.Claude.DefaultMaxBudgetUSD)
+	}
+
+	fromFile := goodConfig + "claude:\n  default_max_budget_usd: 0.75\n"
+	fromFile = strings.Replace(fromFile, "claude:\n  config_dir: /data/claude\n", "", 1)
+	c, err = Parse([]byte(fromFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Claude.DefaultMaxBudgetUSD != 0.75 {
+		t.Errorf("from file = %v, want 0.75", c.Claude.DefaultMaxBudgetUSD)
+	}
+
+	// The environment wins over the file.
+	t.Setenv(MaxBudgetEnv, "2.5")
+	c, err = Parse([]byte(fromFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Claude.DefaultMaxBudgetUSD != 2.5 {
+		t.Errorf("from env = %v, want 2.5", c.Claude.DefaultMaxBudgetUSD)
+	}
+
+	for _, bad := range []string{"lots", "-1", "0"} {
+		t.Setenv(MaxBudgetEnv, bad)
+		if _, err := Parse([]byte(goodConfig)); err == nil {
+			t.Errorf("%s=%q: expected error", MaxBudgetEnv, bad)
+		}
+	}
+}

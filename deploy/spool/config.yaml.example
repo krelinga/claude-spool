@@ -12,6 +12,9 @@ claude:
   # configuring MCP servers yourself (design §3.2).
   credential_mode: claudeai_login
   default_model: sonnet
+  # What one job may spend when its queue sets no max_budget_usd. Defaults to
+  # 1.00; SPOOL_MAX_BUDGET_USD overrides it without editing this file.
+  default_max_budget_usd: 1.00
 
 tokens:
   # Full access to every queue, and the only token that can reach one added

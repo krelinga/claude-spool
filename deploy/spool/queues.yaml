@@ -29,6 +29,14 @@
 # schemas, which the job actually needs. Revisit this list whenever you enable or
 # disable a connector on claude.ai — a newly enabled one is offered by default
 # and silently costs every queue.
+#
+# Budget: no queue here sets max_budget_usd, so each inherits the service-wide
+# cap, claude.default_max_budget_usd in config.yaml ($1.00 unless set), which
+# SPOOL_MAX_BUDGET_USD overrides at startup. It is a guard against a runaway
+# job, not a target. Measured on the places queue: a job arriving with a cold
+# prompt cache, which is most jobs from a phone, costs $0.35-0.50, because about
+# 97k tokens of context are written to the cache on its first turn. Set
+# max_budget_usd on a queue only when it genuinely needs a different cap.
 
 queues:
   media:
@@ -74,8 +82,6 @@ queues:
         enum: [book, film, tv, game, album, podcast, comic, essay, ttrpg]
     model: sonnet
     max_turns: 30
-    # A guard, not a target: a correctly configured run of this queue costs cents.
-    max_budget_usd: 0.50
     timeout: 10m
     weight: 1
     notify: [job.failed, job.needs_input]
@@ -126,8 +132,6 @@ queues:
         enum: [Tool, Project idea, Gear, Technique, Inspiration, Reading, Model, Jig, Language, Social]
     model: sonnet
     max_turns: 30
-    # A guard, not a target: a correctly configured run of this queue costs cents.
-    max_budget_usd: 0.50
     timeout: 10m
     weight: 1
     notify: [job.failed, job.needs_input]
@@ -194,8 +198,6 @@ queues:
         enum: [created, updated, unchanged]
     model: sonnet
     max_turns: 30
-    # A guard, not a target: a correctly configured run of this queue costs cents.
-    max_budget_usd: 0.50
     timeout: 10m
     weight: 1
     notify: [job.failed, job.needs_input]

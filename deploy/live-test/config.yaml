@@ -10,6 +10,9 @@ claude:
   config_dir: /data/claude
   credential_mode: claudeai_login
   default_model: sonnet
+  # What one job may spend when its queue sets no max_budget_usd. Defaults to
+  # 1.00; SPOOL_MAX_BUDGET_USD overrides it without editing this file.
+  default_max_budget_usd: 1.00
   # A test container is up for an hour, not for days; nothing to keep warm.
   keepalive_interval: 0s
   login_attempt_ttl: 10m

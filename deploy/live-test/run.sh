@@ -49,7 +49,8 @@ Usage: deploy/live-test/run.sh <command>
   clean                     Remove the container, the login volume and the token
 
 Environment: SPOOL_QUEUES (source queues file), SPOOL_PORT, SPOOL_CONTAINER,
-SPOOL_VOLUME, CLAUDE_CODE_VERSION, SPOOL_TOKEN.
+SPOOL_VOLUME, CLAUDE_CODE_VERSION, SPOOL_TOKEN, SPOOL_MAX_BUDGET_USD (passed
+through at `up`).
 USAGE
 }
 
@@ -167,6 +168,7 @@ case "$cmd" in
       -v "$here/config.yaml:/etc/spool/config.yaml:ro" \
       -v "$gen:/etc/spool/generated:ro" \
       -e "SPOOL_TOKEN=$SPOOL_TOKEN" \
+      ${SPOOL_MAX_BUDGET_USD:+-e "SPOOL_MAX_BUDGET_USD=$SPOOL_MAX_BUDGET_USD"} \
       "$image" spool --config /etc/spool/config.yaml --queues /etc/spool/generated/queues.yaml >/dev/null
     for _ in $(seq 1 60); do
       curl -sf "$base/healthz" >/dev/null 2>&1 && break
