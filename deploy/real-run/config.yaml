@@ -1,0 +1,24 @@
+# Config for the first real run. The token comes from the environment, so this
+# file is safe to keep in git.
+
+listen: ":8080"
+data_dir: /data
+
+claude:
+  binary: claude
+  config_dir: /data/claude
+  credential_mode: claudeai_login
+  default_model: sonnet
+  keepalive_interval: 4h
+  login_attempt_ttl: 10m
+
+# Reachable from the host, which is what the login URL in a notification uses.
+public_url: "http://localhost:8080"
+
+tokens:
+  - name: admin
+    token_env: SPOOL_TOKEN
+    queues: ["*"]
+
+# No webhook receivers: this run is driven by hand, so state is read from
+# /v1/auth and /v1/jobs rather than pushed anywhere.

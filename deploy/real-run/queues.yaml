@@ -1,0 +1,113 @@
+# Queues for the first run against a real claude.ai login and a live Notion.
+#
+# Two versions of the same job on purpose. media-dryrun proves the plumbing —
+# the skill loads, the connector is reachable, the tool names are right — without
+# touching the database. Only once that passes is there any point running media,
+# which actually writes.
+#
+# Tool names are the ones the spike captured from CLI 2.1.282: the connector is
+# "claude.ai Notion" and its tools are prefixed mcp__claude_ai_Notion__.
+
+queues:
+  media-dryrun:
+    description: Verify the media plumbing without writing anything to Notion
+    prompt: |
+      /anthropic-skills:notion-media {{input}}
+    system_prompt: |
+      This is a VERIFICATION RUN. Do not create, update, move or delete anything,
+      in Notion or anywhere else. Search and read only.
+
+      Confirm you can reach the Media database, then report what you *would*
+      record for this item: which database, which properties, and which values.
+      Set status to succeeded if you got that far, and failed if you could not
+      reach the database or could not tell what to write. Put the database's URL
+      in links.
+    requires:
+      skills: [notion-media]
+      connectors: [notion]
+    tools: [Skill, WebSearch, WebFetch]
+    allowed_tools:
+      - Skill
+      - WebSearch
+      - WebFetch
+      - mcp__claude_ai_Notion__notion-search
+      - mcp__claude_ai_Notion__notion-fetch
+      - mcp__claude_ai_Notion__notion-query-data-sources
+      - mcp__claude_ai_Notion__notion-query-multiple-data-sources
+      - mcp__claude_ai_Notion__notion-list-recent-pages
+    # Belt and braces. allowed_tools only pre-approves, so the safety here comes
+    # from this list: every mutating Notion tool the spike observed, denied
+    # outright. A deny beats an allow, so a mistake above cannot write.
+    disallowed_tools:
+      - mcp__claude_ai_Notion__notion-create-pages
+      - mcp__claude_ai_Notion__notion-update-page
+      - mcp__claude_ai_Notion__notion-create-database
+      - mcp__claude_ai_Notion__notion-update-data-source
+      - mcp__claude_ai_Notion__notion-create-comment
+      - mcp__claude_ai_Notion__notion-create-attachment
+      - mcp__claude_ai_Notion__notion-create-file-upload
+      - mcp__claude_ai_Notion__notion-create-folder
+      - mcp__claude_ai_Notion__notion-update-folder
+      - mcp__claude_ai_Notion__notion-create-view
+      - mcp__claude_ai_Notion__notion-update-view
+      - mcp__claude_ai_Notion__notion-duplicate-page
+      - mcp__claude_ai_Notion__notion-move-pages
+      - mcp__claude_ai_Notion__notion-upload-skill
+      - mcp__claude_ai_Notion__notion-spawn-session
+      - mcp__claude_ai_Notion__notion-send-message-to-session
+    outcome_extension:
+      notion_url:
+        type: string
+        description: The database or page you would write to.
+      media_type:
+        enum: [book, film, tv, game, album, podcast, comic, essay, ttrpg]
+    model: sonnet
+    max_turns: 30
+    timeout: 10m
+    weight: 1
+    notify: [job.succeeded, job.failed, job.needs_input]
+    retention: 30d
+
+  media:
+    description: Add or update entries in the Notion Media database
+    prompt: |
+      /anthropic-skills:notion-media {{input}}
+    system_prompt: |
+      Prefer the edition/format details given. If the user says they own it, also record a Copy.
+    requires:
+      skills: [notion-media]
+      connectors: [notion]
+    tools: [Skill, WebSearch, WebFetch]
+    allowed_tools:
+      - Skill
+      - WebSearch
+      - WebFetch
+      - mcp__claude_ai_Notion__notion-search
+      - mcp__claude_ai_Notion__notion-fetch
+      - mcp__claude_ai_Notion__notion-query-data-sources
+      - mcp__claude_ai_Notion__notion-create-pages
+      - mcp__claude_ai_Notion__notion-update-page
+    # Even the real queue has no business deleting or moving anything.
+    disallowed_tools:
+      - mcp__claude_ai_Notion__notion-move-pages
+      - mcp__claude_ai_Notion__notion-duplicate-page
+      - mcp__claude_ai_Notion__notion-create-database
+      - mcp__claude_ai_Notion__notion-update-data-source
+      - mcp__claude_ai_Notion__notion-spawn-session
+    args:
+      url:
+        type: string
+        format: uri
+        description: A link the entry came from, when the share sheet has one.
+    outcome_extension:
+      notion_url:
+        type: string
+        description: The page created or updated.
+      media_type:
+        enum: [book, film, tv, game, album, podcast, comic, essay, ttrpg]
+    model: sonnet
+    max_turns: 30
+    timeout: 10m
+    weight: 1
+    notify: [job.succeeded, job.failed, job.needs_input]
+    retention: 180d
