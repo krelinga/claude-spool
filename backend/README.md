@@ -43,16 +43,11 @@ Then edit it:
 - **`tokens`**: the example has an unscoped `admin` token and a phone token
   scoped to `media`, `ideas` and `places`. Add or remove tokens as needed.
 
-> **backend 0.1.0 predates `default_max_budget_usd`.** The config loader
-> rejects fields it doesn't know, so the `0.1` image fails with
-> `field default_max_budget_usd not found`. Until the next backend release
-> ships, either delete that line (each queue in `queues.yaml` still carries
-> its own `max_budget_usd`) or run a local build (see below).
-
 ### 2. Write `.env`
 
 Every `token_env` and `secret_env` that `config.yaml` names must be set and
-non-empty, and API tokens must be at least 16 characters. If one is missing,
+non-empty, and API tokens and webhook secrets must be at least 16
+characters. If one is missing,
 Spool exits at startup and Docker keeps restarting it. For the example
 config:
 
@@ -71,10 +66,10 @@ these optional settings from the same file:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPOOL_IMAGE` | `ghcr.io/krelinga/claude-spool/backend:0.1` | The image to run. |
+| `SPOOL_IMAGE` | `ghcr.io/krelinga/claude-spool/backend:0.2` | The image to run. |
 | `SPOOL_BIND` | `127.0.0.1` | Host address to publish on. Loopback assumes Caddy runs on the same host. |
 | `SPOOL_PORT` | `8080` | Host port. |
-| `SPOOL_MAX_BUDGET_USD` | unset | Overrides `default_max_budget_usd` (the per-job cap for queues that set none). Not available in 0.1.0. |
+| `SPOOL_MAX_BUDGET_USD` | unset | Overrides `default_max_budget_usd` (the per-job cap for queues that set none). |
 
 **Never put `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
 `CLAUDE_CODE_OAUTH_TOKEN` in `.env`.** Each one outranks the claude.ai login
